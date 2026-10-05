@@ -1,15 +1,15 @@
 {
-  "name": "temporal-assessment-starter",
+  "name": "juniper-salon-waitlist",
   "version": "1.0.0",
   "private": true,
-  "description": "Student starter for the Temporal post-assessment.",
+  "description": "Temporal prototype that refills last-minute cancellations at Juniper Salon from its waitlist.",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:api": "tsx src/api.ts",
     "dev:worker": "tsx src/worker.ts",
     "start:temporal": "docker compose up -d temporal",
     "stop": "docker compose down",
-    "test": "tsx --test tests/workflow.test.ts",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": { "node": ">=20" },

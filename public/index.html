@@ -3,31 +3,91 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Temporal assessment starter</title>
+    <meta name="theme-color" content="#2f6250" />
+    <title>Juniper Salon · Refill openings</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main>
-      <p class="eyebrow">Temporal assessment starter</p>
-      <h1>Your environment is connected.</h1>
-      <p class="intro">
-        This neutral demonstration starts a Workflow, waits durably for a
-        Signal, and then completes. Replace it with the experience your
-        customer needs.
-      </p>
-      <section class="card">
-        <h2 id="phase">Ready</h2>
-        <p id="message">Start the demonstration to verify the setup.</p>
-        <button id="start">Start demo Workflow</button>
-        <button id="continue" hidden>Send continue Signal</button>
-        <p class="request-id" id="request-id"></p>
-      </section>
-      <p class="footer">
-        Inspect the execution at
-        <a href="http://localhost:8233" target="_blank">localhost:8233</a>.
-      </p>
+      <header class="topbar">
+        <div class="brand">
+          <p class="eyebrow">Juniper Salon · Prototype</p>
+          <h1>Refill openings</h1>
+        </div>
+        <div class="row">
+          <span class="attention-pill" id="attention" hidden></span>
+          <button class="secondary small-btn" id="alerts-btn" data-action="alerts" hidden>Turn on alerts</button>
+          <span class="conn" id="conn">Connecting…</span>
+          <a class="small" id="temporal-ui" href="http://localhost:8233/namespaces/default/workflows" target="_blank" rel="noopener">Temporal Web UI</a>
+        </div>
+      </header>
+
+      <p class="sim-banner" role="note"><strong>Texts are simulated</strong> — nothing is sent to real phones. Use <em>Open client offer</em> on an opening to act as the client. Staff alerts are simulated too (see each opening's history).</p>
+
+      <section class="tiles" id="tiles" aria-label="Summary"></section>
+
+      <details class="panel new-opening" id="new-opening">
+        <summary class="panel-head">
+          <h2>+ New opening (a cancellation came in)</h2>
+          <span class="btn secondary small">Open form</span>
+        </summary>
+        <form id="opening-form" autocomplete="off">
+          <div class="form-grid">
+            <label class="field">Service <select name="service" id="f-service" required></select></label>
+            <label class="field">Stylist <select name="stylist" id="f-stylist" required></select></label>
+            <label class="field">Date <input type="date" name="date" id="f-date" required /></label>
+            <label class="field">Time <input type="time" name="time" id="f-time" step="300" required /></label>
+            <label class="field">Duration (min) <input type="number" name="durationMinutes" min="15" max="480" step="5" value="60" required /></label>
+            <label class="field">Texts per round
+              <select name="batchSize">
+                <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option>
+              </select>
+            </label>
+            <label class="field">Reply window
+              <select name="replyWindow" id="f-window">
+                <option value="auto" selected>Auto (15 min today, 60 min later)</option>
+                <option value="10">10 min</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">1 hour</option>
+                <option value="120">2 hours</option>
+                <option value="fast">Fast demo: 30 seconds</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" name="simulateTextFailure" />
+            <span>Simulate first text attempt failing <span class="muted small">(shows Temporal retrying the text in the Event History)</span></span>
+          </label>
+          <p class="muted small" id="window-hint"></p>
+          <div class="row">
+            <button type="submit" id="create-btn">Find matches</button>
+            <span class="form-error" id="form-error" role="alert"></span>
+          </div>
+          <p class="muted small">Nothing is texted yet — you'll approve who gets offered first. A client's yes holds the slot until you confirm it in Square.</p>
+        </form>
+      </details>
+
+      <div class="layout" style="margin-top: 16px">
+        <section aria-label="Openings">
+          <div class="panel-head"><h2>Openings</h2><span class="muted small" id="updated"></span></div>
+          <div class="openings" id="openings"><div class="empty panel">Loading…</div></div>
+        </section>
+        <section class="panel" aria-label="Waitlist">
+          <div class="panel-head">
+            <h2>Waitlist</h2>
+            <div class="chips" id="wl-filter">
+              <button class="secondary" data-filter="waiting">Waiting</button>
+              <button class="secondary" data-filter="booked">Booked</button>
+              <button class="secondary" data-filter="all">All</button>
+            </div>
+          </div>
+          <p><span class="sample-label" id="wl-source">Sample data — imported from the salon's Google Sheet</span></p>
+          <p class="muted tiny">Fictional clients and 555 numbers. Availability notes are shown exactly as staff wrote them; tags are a rough guess used only for suggestions.</p>
+          <div id="waitlist"></div>
+        </section>
+      </div>
     </main>
+    <div class="toast" id="toast" hidden></div>
     <script src="/app.js"></script>
   </body>
 </html>
-
