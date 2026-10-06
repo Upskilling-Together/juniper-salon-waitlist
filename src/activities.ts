@@ -73,7 +73,8 @@ export async function sendOfferTexts(input: {
   for (const o of input.offers) {
     const text =
       `Juniper Salon: a ${opening.service} with ${opening.stylist} just opened up — ${formatSlot(opening.startsAt)} ` +
-      `(${opening.durationMinutes} min). Reply within ${formatWindowSeconds(opening.replyWindowSeconds)}: ` +
+      `(${opening.durationMinutes} min). Reply within ${formatWindowSeconds(opening.replyWindowSeconds)} — ` +
+      `late replies aren't guaranteed the appointment: ` +
       offerLink(opening.openingId, o.clientId, o.token);
     log.info(`SMS to ${o.name} ${o.mobile} (attempt ${attempt}): ${text}`);
     console.log(`[sms] SMS to ${o.name} ${o.mobile}: ${text}`);

@@ -203,7 +203,7 @@ export const CLIENT_MESSAGES: Record<RespondOutcome, string> = {
   booked: "It's yours — we're holding it for you. The salon will text you shortly to confirm.",
   declined: "No problem — thanks for letting us know. You're still on the waitlist with your place.",
   already_taken: "Sorry, this time was just taken. You're still on the waitlist with your place.",
-  expired: "This offer has expired. You're still on the waitlist with your place.",
+  expired: "This offer has expired, so the appointment isn't guaranteed. You're still on the waitlist with your place.",
   no_longer_available: "This opening is no longer available. You're still on the waitlist with your place.",
   already_answered: "You've already answered this offer.",
   hold_released:
@@ -215,4 +215,4 @@ export const FILLED_NOTICE = "Already filled — you're still on the waitlist.";
 
 /** Shown when a client taps Accept after their own reply window ended (see ACCEPT_AFTER_OWN_DEADLINE). */
 export const LATE_YES_MESSAGE =
-  "This offer has expired — your reply came in after the deadline. The salon will check and get back to you. You're still on the waitlist with your place.";
+  "This offer has expired — your reply came in after the deadline, so the appointment isn't guaranteed. The salon will check whether it's still available and let you know. You're still on the waitlist with your place.";

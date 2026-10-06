@@ -72,6 +72,7 @@ function render() {
       view.canRespond && !expiredLocally
         ? `<div class="deadline">Reply within<span class="countdown" id="countdown">${countdownText(left ?? 0)}</span>
              ${view.fastDemo ? '<span class="tiny">Fast demo: 30-second reply window</span>' : ""}</div>
+           <p class="small muted">Replies after this time aren't guaranteed the appointment.</p>
            ${view.roundSize > 1 ? `<p class="small muted">${view.roundSize} people were offered this time. The first person to say yes gets it.</p>` : ""}
            <div class="offer-actions">
              <button id="accept" ${submitting ? "disabled" : ""}>Yes, I want it</button>

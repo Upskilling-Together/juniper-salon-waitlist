@@ -48,7 +48,7 @@ Two other options: **Simulate first text attempt failing** shows a failed send b
 | Two yeses cause problems, and someone gets let down. | **First yes wins**, decided atomically. Everyone else is told right away and keeps their place. |
 | She waits about 10–15 minutes for same-day openings and 1–2 hours for later ones, but it's not a firm rule. | The default window is 15 minutes for same-day openings and 60 minutes for later ones. Staff can change it per opening. |
 | A yes after the slot is filled shouldn't be booked; the client stays on the list. | "Sorry, this time was just taken." The client keeps their place. |
-| A late yes while the slot is still open shouldn't be automatic. | It's flagged for staff to **Book** or **Dismiss**. |
+| A late yes while the slot is still open shouldn't be automatic, and the text should make clear a late reply doesn't guarantee the appointment. | The offer text and page both say late replies aren't guaranteed. A late yes is flagged for staff to **Book** or **Dismiss**. |
 | Declines and no-replies stay on the list for future openings. | Their place on the list is never changed. |
 | Some clients have opted out and must never be contacted. | Opted-out clients are never suggested or texted, and are badged on the waitlist. |
 | Staff need to see the service, stylist, time, who has the offer, declines and timeouts, and whether it's filled or cancelled. | All of this is on each opening card, along with a timestamped history. |
