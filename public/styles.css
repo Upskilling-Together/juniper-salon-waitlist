@@ -190,3 +190,10 @@ button.danger-solid { background: var(--danger); color: #fff; }
 .badge.danger { background: var(--danger-soft); color: var(--danger); }
 .danger-text { color: var(--danger); }
 .late-yes h3 { color: var(--warn); }
+
+/* ---------- simulated-text labelling (Lena: nobody should mistake these for real messages) ---------- */
+.sim-banner { position: sticky; top: 0; z-index: 5; border: 1px solid currentColor; }
+.sim-label { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--warn); color: #fff; font-size: 0.7rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; vertical-align: 1px; }
+.sms-bubble { margin: 8px 0 12px; padding: 10px 12px; border-radius: 14px 14px 14px 4px; border: 2px dashed var(--warn); background: var(--warn-soft); }
+.sms-bubble p { margin: 6px 0 0; font-size: 0.88rem; }
+@media (prefers-color-scheme: dark) { .sim-label { color: #1d1a14; } }

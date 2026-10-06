@@ -79,7 +79,7 @@ const mockActivities: typeof realActivities = {
   async sendOfferTexts({ opening, offers }) {
     if (gates.send) await gates.send;
     recorded.sent.push({ openingId: opening.openingId, clientIds: offers.map((o) => o.clientId) });
-    return { deliveredAt: Date.now() };
+    return { deliveredAt: Date.now(), texts: Object.fromEntries(offers.map((o) => [o.offerId, `SIM text for ${o.name}`])) };
   },
   async notifyFilled({ opening, recipients }) {
     recorded.filledNotices.push({ openingId: opening.openingId, names: recipients.map((r) => r.name) });
@@ -640,7 +640,8 @@ describe("sendOfferTexts activity (simulated SMS)", () => {
     const attempt1 = new MockActivityEnvironment({ attempt: 1 });
     await assert.rejects(attempt1.run(sendOfferTexts, { opening, offers: [offer], simulateFailure: true }), /Simulated SMS/);
     const attempt2 = new MockActivityEnvironment({ attempt: 2 });
-    const ok: { deliveredAt: number } = await attempt2.run(sendOfferTexts, { opening, offers: [offer], simulateFailure: true });
+    const ok: { deliveredAt: number; texts: Record<string, string> } = await attempt2.run(sendOfferTexts, { opening, offers: [offer], simulateFailure: true });
+    assert.match(ok.texts[offer.offerId], /late replies aren't guaranteed/);
     assert.equal(typeof ok.deliveredAt, "number");
   });
 });

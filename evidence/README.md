@@ -11,5 +11,5 @@ All names and phone numbers are fictional sample data.
   6. two `respond` Updates that raced, with exactly one winner;
   7. the 15-minute hold timer;
   8. `markSquareDone`.
-- `staff-dashboard.png`: the staff dashboard. It shows one opening that nobody took, with **Keep trying** and **Leave it open** buttons, and one filled opening. It also shows the refill rate against Lena's 50% goal, and the waitlist with notes exactly as staff wrote them.
-- `client-offer-phone.png`: the client's phone page after another client took the slot. It says "Already filled — you're still on the waitlist."
+- `staff-dashboard.png`: the staff dashboard during a round of offers. It shows the **Demo** banner, the two people holding the offer with their countdowns, and the exact offer text in a bubble marked **Simulated text — not sent**. It also shows the refill rate against Lena's 50% goal, and the waitlist with notes exactly as staff wrote them.
+- `client-offer-phone.png`: the client's phone page. It's labelled as a simulated client view, shows the simulated text that would have led there, and has a countdown, a note that late replies aren't guaranteed the appointment, and **Yes** / **No** buttons.

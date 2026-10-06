@@ -22,6 +22,9 @@ import type {
   Suggestion,
 } from "./types";
 
+/** Every "text" in this prototype is only logged — this label makes that unmistakable. */
+const SIMULATED = "[SIMULATED TEXT — NOT SENT]";
+
 const APP_BASE_URL = process.env.APP_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
 async function waitlistHandle() {
@@ -64,28 +67,30 @@ export async function sendOfferTexts(input: {
   opening: OpeningInput;
   offers: OfferText[];
   simulateFailure: boolean;
-}): Promise<{ deliveredAt: number }> {
+}): Promise<{ deliveredAt: number; texts: Record<string, string> }> {
   const { attempt } = Context.current().info;
   if (input.simulateFailure && attempt === 1) {
     throw ApplicationFailure.retryable("Simulated SMS gateway hiccup on the first attempt", "SimulatedSmsFailure");
   }
   const { opening } = input;
+  const texts: Record<string, string> = {};
   for (const o of input.offers) {
     const text =
       `Juniper Salon: a ${opening.service} with ${opening.stylist} just opened up — ${formatSlot(opening.startsAt)} ` +
       `(${opening.durationMinutes} min). Reply within ${formatWindowSeconds(opening.replyWindowSeconds)} — ` +
       `late replies aren't guaranteed the appointment: ` +
       offerLink(opening.openingId, o.clientId, o.token);
-    log.info(`SMS to ${o.name} ${o.mobile} (attempt ${attempt}): ${text}`);
-    console.log(`[sms] SMS to ${o.name} ${o.mobile}: ${text}`);
+    texts[o.offerId] = text;
+    log.info(`${SIMULATED} to ${o.name} ${o.mobile} (attempt ${attempt}): ${text}`);
+    console.log(`${SIMULATED} to ${o.name} ${o.mobile}: ${text}`);
   }
-  return { deliveredAt: Date.now() };
+  return { deliveredAt: Date.now(), texts };
 }
 
 type Recipients = { opening: OpeningInput; recipients: { name: string; mobile: string }[] };
 
 function sms(recipients: Recipients["recipients"], text: string) {
-  for (const r of recipients) console.log(`[sms] SMS to ${r.name} ${r.mobile}: ${text}`);
+  for (const r of recipients) console.log(`${SIMULATED} to ${r.name} ${r.mobile}: ${text}`);
 }
 
 export async function notifyFilled({ opening, recipients }: Recipients): Promise<void> {
@@ -109,7 +114,7 @@ export async function notifyHoldReleased({ opening, recipients }: Recipients): P
 
 /** SIMULATED text to the salon phone, so Lena/Carla hear about it while they're with a client. */
 export async function notifyStaff({ text }: { opening: OpeningInput; text: string }): Promise<void> {
-  console.log(`[sms] SMS to salon phone (staff): Juniper refill: ${text} ${APP_BASE_URL}/`);
+  console.log(`${SIMULATED} to salon phone (staff): Juniper refill: ${text} ${APP_BASE_URL}/`);
 }
 
 /** Tell the waitlist Workflow this client is booked (first booking wins). */

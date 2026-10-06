@@ -119,6 +119,8 @@ export type Offer = {
   status: OfferStatus;
   createdAt: number;
   deliveredAt?: number;
+  /** Exact wording of the SIMULATED offer text (nothing is really sent). */
+  smsText?: string;
   sentAt?: number;
   deadline?: number;
   respondedAt?: number;

@@ -27,7 +27,7 @@ Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Tempo
 
 1. **Create an opening.** Click **Open form** and enter a Haircut with Lena later today, with the reply window set to **Fast demo: 30 seconds**.
 2. **Approve the matches.** The system suggests people who want that service, accept that stylist, and whose availability note roughly fits, earliest joiner first. Each note is shown exactly as staff wrote it, and anything the system can't interpret is marked **Check note**. Untick anyone, then click **Approve & text**. **Nothing is sent before approval.**
-3. **Reply as a client.** Click **Open client offer** to see the page a client would open from the text: service, stylist, date, exact time and a countdown, with **Yes, I want it** and **No thanks** buttons.
+3. **Reply as a client.** Click **Preview client's text** to see the page a client would open from the text: the text itself, then the service, stylist, date, exact time and a countdown, with **Yes, I want it** and **No thanks** buttons.
 4. **Race two yeses.** Open two clients' offers and accept both. The first yes **holds** the slot. The other client sees "Sorry, this time was just taken," and everyone else in that round is told it's filled and that they're still on the waitlist.
 5. **Confirm in Square.** The card now reads **Held for … — confirm in Square**. Click **Done — updated in Square**, or **Couldn't confirm — release hold** to move on to the next people. If nobody does either within **15 minutes**, the hold is released automatically.
 6. **Let it time out.** Leave a fast-demo round unanswered. The people in it are marked **No reply** and the next people are texted automatically. When nobody is left, the card turns red: **Nobody took it**, with **Keep trying** and **Leave it open** buttons.
@@ -55,6 +55,7 @@ Two other options: **Simulate first text attempt failing** shows a failed send b
 | If nobody takes it, she wants to know right away and then decide. | **Nobody took it** alert with **Keep trying** and **Leave it open**. |
 | Square stays the real calendar, and nothing books automatically. | A yes only *holds* the slot. Staff confirm and update Square themselves. |
 | If a hold can't be confirmed, release it and offer it to the next person, automatically after about 15 minutes. | **Release hold** button, plus an automatic release after 15 minutes. |
+| Simulated texts must be clearly labelled during the demo, so nobody mistakes them for real messages. | Every page has a **Demo** banner, and each message appears in a dashed bubble marked **Simulated text — not sent**. The history and Worker logs say "simulated" too. |
 | Lena and Carla are usually with clients when a cancellation comes in. | Simulated texts to the salon phone, a "needs you" count in the tab title, optional browser alerts, and a phone-friendly layout. |
 | Success means refilling at least half of cancellations, up from about 3 in 10. | A refill-rate tile compared against the ~30% baseline and the 50% goal. It counts only openings confirmed in Square, and it's labelled as prototype data. |
 
@@ -94,7 +95,7 @@ The flow was also checked live against the Docker Temporal server. Screenshots a
 
 ## What's simulated, and what's next
 
-- **No real texts are sent.** Texts are logged by an Activity, and **Open client offer** stands in for the text link. A pilot would need an SMS provider sending from the salon number, plus opt-out handling on that provider.
+- **No real texts are sent.** Texts are logged by an Activity and shown on screen marked **Simulated text — not sent**. **Preview client's text** stands in for the text link. A pilot would need an SMS provider sending from the salon number, plus opt-out handling on that provider.
 - **No Google Sheets or Square connection.** The waitlist is sample data, and Square stays manual, as Lena asked.
 - **Local only.** There is no staff login, and the offer links are local. Real use needs authentication and secure public offer links.
 - **Refill rate is illustrative.** It reflects only the openings in this prototype and doesn't prove the 50% goal.

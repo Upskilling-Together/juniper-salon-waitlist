@@ -224,6 +224,13 @@ function renderApproval(id, s) {
     </div>`;
 }
 
+/** The exact offer text (link shortened), clearly marked as simulated — nothing is really sent. */
+function simText(offer) {
+  if (!offer?.smsText) return "";
+  const text = offer.smsText.replace(/https?:\/\/\S+/, "[offer link]");
+  return `<div class="sms-bubble"><span class="sim-label">Simulated text — not sent</span><p>${esc(text)}</p></div>`;
+}
+
 function renderOffering(id, s) {
   const round = s.currentRound;
   const roundOffers = round ? s.offers.filter((o) => round.offerIds.includes(o.offerId)) : [];
@@ -240,11 +247,12 @@ function renderOffering(id, s) {
             <span class="small muted">${o.status === "live" ? "No reply yet" : esc(o.status.replace("_", " "))}</span></span>
           <span class="row">
             ${o.status === "live" && o.deadline ? `<span class="countdown" data-deadline="${o.deadline}">${countdownText(o.deadline)}</span>` : ""}
-            ${o.status === "live" ? `<a class="btn secondary small" href="${offerUrl(id, o)}" target="_blank" rel="noopener">Open client offer</a>` : ""}
+            ${o.status === "live" ? `<a class="btn secondary small" href="${offerUrl(id, o)}" target="_blank" rel="noopener">Preview client's text</a>` : ""}
           </span>
         </div>`,
         )
         .join("")}
+      ${simText(roundOffers.find((o) => o.smsText))}
       ${round?.deadline ? `<p class="tiny muted" style="margin:6px 0 0">Reply by ${esc(clock(round.deadline))}${s.opening.fastDemo ? " · Fast demo (30-second window)" : ""}. First yes wins.</p>` : ""}
       <p class="small muted" style="margin:6px 0 0">Next up: ${nextUp.length ? esc(nextUp.join(", ")) : "nobody — this is the last round"}</p>
     </div>`;

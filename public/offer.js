@@ -58,7 +58,11 @@ function render() {
   const expiredLocally = view.canRespond && left === 0;
   const message = lastResult?.message ?? view.message;
   const outcome = lastResult?.outcome ?? view.outcome;
+  const sms = view.smsText
+    ? `<div class="sms-bubble"><span class="sim-label">Simulated text — not sent</span><p>${esc(view.smsText.replace(/https?:\/\/\S+/, "[this page]"))}</p></div>`
+    : "";
   card.innerHTML = `
+    ${sms}
     <div class="muted small">${esc(view.service)} with ${esc(view.stylist)}</div>
     <div class="offer-time">${esc(time)}</div>
     <div><strong>${esc(date)}</strong></div>

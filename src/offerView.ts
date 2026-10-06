@@ -16,6 +16,8 @@ export type ClientOfferView =
       durationMinutes: number;
       deadline?: number;
       fastDemo: boolean;
+      /** Exact wording of the simulated text that "brought" the client here. */
+      smsText?: string;
       /** How many people were offered this round (the "first yes wins" line only shows when > 1). */
       roundSize: number;
       canRespond: boolean;
@@ -38,6 +40,7 @@ export function clientOfferView(state: OpeningState, clientId: string, token: st
     durationMinutes: state.opening.durationMinutes,
     deadline: offer.deadline,
     fastDemo: state.opening.fastDemo,
+    smsText: offer.smsText,
     roundSize: state.offers.filter((o) => o.round === offer.round).length,
   };
   const done = (outcome: RespondOutcome | "filled_notice", message: string) => ({ ...base, canRespond: false, outcome, message });

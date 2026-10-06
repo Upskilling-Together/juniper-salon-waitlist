@@ -256,7 +256,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
       s.closedAt = Date.now();
       sendScope?.cancel(); // stop any text still being sent / retried
       log("cancelled", `Staff cancelled the opening${s.cancelReason ? ` (${s.cancelReason})` : ""}${heldFor ? ` — hold for ${heldFor} released` : ""}.`);
-      if (told.length) log("told_cancelled", `Told ${names(told)}: no longer available.`);
+      if (told.length) log("told_cancelled", `Simulated text to ${names(told)}: no longer available.`);
       return { ok: true, message: "Opening cancelled. Anyone holding an offer is told it's no longer available." };
     },
     {
@@ -478,7 +478,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
     s.currentRound = { number: roundNo, offerIds: offers.map((o) => o.offerId) };
     log("sending", `Round ${roundNo}: sending simulated texts to ${names(offers)}.`);
 
-    let sent: { deliveredAt: number };
+    let sent: { deliveredAt: number; texts?: Record<string, string> };
     const scope = new CancellationScope();
     sendScope = scope;
     try {
@@ -508,6 +508,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
       o.status = "live";
       o.sentAt = sentAt;
       o.deliveredAt = sent.deliveredAt;
+      o.smsText = sent.texts?.[o.offerId];
       o.deadline = deadline;
     }
     s.currentRound = { number: roundNo, offerIds: offers.map((o) => o.offerId), sentAt, deadline };
@@ -519,7 +520,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
     const noReply = offers.filter((o) => o.status === "live");
     if (noReply.length) {
       noReply.forEach((o) => (o.status = "timed_out"));
-      log("timed_out", `No reply (timed out): ${names(noReply)}. They stay on the waitlist.`);
+      log("timed_out", `No reply (timed out): ${names(noReply)}. Simulated "offer expired" text sent; they stay on the waitlist.`);
       // Not awaited: the next round must not wait on (or race with) the expiry notice.
       background(quick.notifyTimedOut({ opening: s.opening, recipients: noReply.map(({ name, mobile }) => ({ name, mobile })) }));
     } else {
@@ -592,7 +593,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
         ? `Staff booked ${offer.name} from their late yes — slot held for them.`
         : `${offer.name} said YES — slot held for them. Staff to confirm and update Square.`,
     );
-    if (others.length) log("told_filled", `Told ${names(others)}: already filled, still on the waitlist.`);
+    if (others.length) log("told_filled", `Simulated text to ${names(others)}: already filled, still on the waitlist.`);
   }
 
   function releaseHoldNow(by: "staff" | "auto", reason?: string) {
