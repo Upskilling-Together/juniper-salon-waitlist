@@ -5,10 +5,10 @@ const esc = (v) =>
 
 const STATUS_LABEL = {
   finding_matches: "Finding matches",
-  awaiting_approval: "Awaiting approval",
-  offering: "Offering",
+  awaiting_approval: "Needs your OK",
+  offering: "Offers out",
   filled: "Filled",
-  unfilled: "Unfilled",
+  unfilled: "Nobody took it",
   cancelled: "Cancelled",
   left_open: "Left open",
   unknown: "Unknown",
@@ -146,7 +146,7 @@ function renderTiles(data) {
   const closed = r.filled + r.unfilled + r.leftOpen;
   $("#tiles").innerHTML = `
     <div class="tile refill">
-      <div class="label">Refill rate</div>
+      <div class="label">Chairs refilled</div>
       <div class="value">${pct == null ? "—" : `${pct}%`}</div>
       <div class="meter" aria-hidden="true">
         <div class="fill" style="width:${pct ?? 0}%"></div>
@@ -157,9 +157,9 @@ function renderTiles(data) {
       <div class="tiny muted"><strong>${esc(r.label)}.</strong></div>
     </div>
     <div class="tile ${unfilled ? "alert" : ""}"><div class="label">Nobody took it</div><div class="value">${unfilled}</div></div>
-    <div class="tile"><div class="label">Need approval</div><div class="value">${needApproval}</div></div>
-    <div class="tile"><div class="label">Offering now</div><div class="value">${offering}</div></div>
-    <div class="tile ${squareTodo ? "warn" : ""}"><div class="label">Held — confirm in Square</div><div class="value">${squareTodo}</div></div>`;
+    <div class="tile"><div class="label">Waiting for your OK</div><div class="value">${needApproval}</div></div>
+    <div class="tile"><div class="label">Offers out now</div><div class="value">${offering}</div></div>
+    <div class="tile ${squareTodo ? "warn" : ""}"><div class="label">Held · confirm in Square</div><div class="value">${squareTodo}</div></div>`;
 }
 
 function names(offers) {
@@ -238,7 +238,7 @@ function renderOffering(id, s) {
   const sending = roundOffers.some((o) => o.status === "sending");
   return `
     <div class="block">
-      <h3>${round ? `Round ${round.number}: ${sending ? "sending texts…" : "holding the offer"}` : "Preparing the next round…"}</h3>
+      <h3>${round ? `Round ${round.number}: ${sending ? "sending texts…" : "waiting for a reply"}` : "Preparing the next round…"}</h3>
       ${roundOffers
         .map(
           (o) => `
@@ -368,7 +368,7 @@ function renderCard(o) {
   const tryLabel = (x) => (s.cycle > 1 ? `${x.name} (try ${x.cycle})` : x.name);
   const by = (st) => people.filter((x) => x.status === st).map((x) => ({ name: tryLabel(x) }));
   const closed = ["filled", "cancelled", "left_open"].includes(s.status);
-  const pillLabel = s.status === "filled" ? (s.square.done ? "Filled" : "Held — confirm") : STATUS_LABEL[s.status] ?? s.status;
+  const pillLabel = s.status === "filled" ? (s.square.done ? "Filled" : "Held for you to confirm") : STATUS_LABEL[s.status] ?? s.status;
   const needsStaff =
     s.status === "awaiting_approval" || (s.status === "filled" && !s.square.done) || s.offers.some((x) => x.lateReply === "expired" && !x.lateYesResolved);
   const cls = s.status === "unfilled" ? "attention" : needsStaff ? "approval" : "";
@@ -496,7 +496,7 @@ function updateAttention(openings) {
     if (s.status === "filled" && !s.square.done && s.winner) items.push([`${o.workflowId}:held:${s.winner.offerId}`, `${s.winner.name} said yes — confirm in Square (${what})`]);
     for (const x of s.offers) if (x.lateReply === "expired" && !x.lateYesResolved) items.push([`${o.workflowId}:late:${x.offerId}`, `${x.name} said yes late — ${what}`]);
   }
-  document.title = items.length ? `(${items.length}) Juniper — needs you` : "Juniper Salon · Refill openings";
+  document.title = items.length ? `(${items.length}) Juniper — needs you` : "Juniper Salon · Open chairs";
   $("#attention").textContent = items.length ? `${items.length} need${items.length === 1 ? "s" : ""} you` : "";
   $("#attention").hidden = !items.length;
   if (seenAttention && "Notification" in window && Notification.permission === "granted") {

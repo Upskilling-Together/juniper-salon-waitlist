@@ -25,7 +25,7 @@ Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Tempo
 
 ## Try it
 
-1. **Create an opening.** Click **Open form** and enter a Haircut with Lena later today, with the reply window set to **Fast demo: 30 seconds**.
+1. **Create an opening.** Click **Add opening** and enter a Haircut with Lena later today, with the reply window set to **Fast demo: 30 seconds**.
 2. **Approve the matches.** The system suggests people who want that service, accept that stylist, and whose availability note roughly fits, earliest joiner first. Each note is shown exactly as staff wrote it, and anything the system can't interpret is marked **Check note**. Untick anyone, then click **Approve & text**. **Nothing is sent before approval.**
 3. **Reply as a client.** Click **Preview client's text** to see the page a client would open from the text: the text itself, then the service, stylist, date, exact time and a countdown, with **Yes, I want it** and **No thanks** buttons.
 4. **Race two yeses.** Open two clients' offers and accept both. The first yes **holds** the slot. The other client sees "Sorry, this time was just taken," and everyone else in that round is told it's filled and that they're still on the waitlist.
@@ -56,6 +56,7 @@ Two other options: **Simulate first text attempt failing** shows a failed send b
 | Square stays the real calendar, and nothing books automatically. | A yes only *holds* the slot. Staff confirm and update Square themselves. |
 | If a hold can't be confirmed, release it and offer it to the next person, automatically after about 15 minutes. | **Release hold** button, plus an automatic release after 15 minutes. |
 | Simulated texts must be clearly labelled during the demo, so nobody mistakes them for real messages. | Every page has a **Demo** banner, and each message appears in a dashed bubble marked **Simulated text — not sent**. The history and Worker logs say "simulated" too. |
+| She wants it warm and calm, not like a technical dashboard, with soft, welcoming colors. | Linen and sage colors with blush and honey accents, a gentle serif for headings, rounded cards, and friendlier words ("Open chairs", "Waiting for your OK", "Someone cancelled? Add the opening"). |
 | Lena and Carla are usually with clients when a cancellation comes in. | Simulated texts to the salon phone, a "needs you" count in the tab title, optional browser alerts, and a phone-friendly layout. |
 | Success means refilling at least half of cancellations, up from about 3 in 10. | A refill-rate tile compared against the ~30% baseline and the 50% goal. It counts only openings confirmed in Square, and it's labelled as prototype data. |
 

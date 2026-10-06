@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#2f6250" />
-    <title>Juniper Salon · Refill openings</title>
+    <meta name="theme-color" content="#f7f1e9" />
+    <title>Juniper Salon · Open chairs</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700;6..12,800&display=swap" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -12,7 +15,8 @@
       <header class="topbar">
         <div class="brand">
           <p class="eyebrow">Juniper Salon · Prototype</p>
-          <h1>Refill openings</h1>
+          <h1>Open chairs</h1>
+          <p class="subtitle">Filling last-minute openings from your waitlist, one calm step at a time.</p>
         </div>
         <div class="row">
           <span class="attention-pill" id="attention" hidden></span>
@@ -28,8 +32,8 @@
 
       <details class="panel new-opening" id="new-opening">
         <summary class="panel-head">
-          <h2>+ New opening (a cancellation came in)</h2>
-          <span class="btn secondary small">Open form</span>
+          <h2>Someone cancelled? Add the opening</h2>
+          <span class="btn secondary small">Add opening</span>
         </summary>
         <form id="opening-form" autocomplete="off">
           <div class="form-grid">
