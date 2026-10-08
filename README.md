@@ -25,14 +25,22 @@ Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Tempo
 
 ## Try it
 
-1. **Create an opening.** Click **Add opening** and enter a Haircut with Lena later today, with the reply window set to **Fast demo: 30 seconds**.
+1. **Create an opening.** Click **Add opening** and enter a Haircut with Lena later today. Open **Offer settings** and set **Reply window** to **Fast demo: 30 seconds**.
 2. **Approve the matches.** The system suggests people who want that service, accept that stylist, and whose availability note roughly fits, earliest joiner first. Each note is shown exactly as staff wrote it, and anything the system can't interpret is marked **Check note**. Untick anyone, then click **Approve & text**. **Nothing is sent before approval.**
-3. **Reply as a client.** Click **Preview client's text** to see the page a client would open from the text: the text itself, then the service, stylist, date, exact time and a countdown, with **Yes, I want it** and **No thanks** buttons.
+3. **Reply as a client.** Click **Preview client's text** to see the page a client would open from the text: the service, stylist, date and exact time, a "Reply by" time with a countdown, **Yes, I want it** and **No thanks** buttons, and the text itself.
 4. **Race two yeses.** Open two clients' offers and accept both. The first yes **holds** the slot. The other client sees "Sorry, this time was just taken," and everyone else in that round is told it's filled and that they're still on the waitlist.
-5. **Confirm in Square.** The card now reads **Held for … — confirm in Square**. Click **Done — updated in Square**, or **Couldn't confirm — release hold** to move on to the next people. If nobody does either within **15 minutes**, the hold is released automatically.
-6. **Let it time out.** Leave a fast-demo round unanswered. The people in it are marked **No reply** and the next people are texted automatically. When nobody is left, the card turns red: **Nobody took it**, with **Keep trying** and **Leave it open** buttons.
-7. **Late yes.** Accept an offer after its countdown ends. The client is told the salon will check, and staff see "… said yes late" with **Book** and **Dismiss** buttons. A late yes is never booked automatically.
-8. **Cancel.** **Cancel opening** works at any point before the slot is confirmed. Every open offer then shows "This opening is no longer available," and no later tap can book it.
+5. **Confirm in Square.** The card now reads **Held for …** with a **Held · confirm in Square** label. Click **Done — updated in Square**, or **Couldn't confirm — release hold** to move on to the next people. Both ask you to confirm first. If nobody does either within **15 minutes**, the hold is released automatically.
+6. **Let it time out.** Leave a fast-demo round unanswered. The people in it are marked **No reply** and the next people are texted automatically. When nobody is left, the card moves to **Needs you**, marked **Nobody took it**, with **Keep trying** and **Leave it open** buttons.
+7. **Late yes.** The client page removes **Yes** and **No** when the countdown ends, so a late yes can only be sent through the API. Copy the offer link from **Preview client's text** (it has `o`, `c` and `t` in it), let that reply window end, then run:
+
+   ```sh
+   curl -X POST http://localhost:3000/api/offers/<o>/respond \
+     -H "Content-Type: application/json" \
+     -d '{"clientId":"<c>","token":"<t>","answer":"accept"}'
+   ```
+
+   The client is told the salon will check, and staff see "… said yes late" with **Book** and **Dismiss** buttons while the opening is still open. A late yes is never booked automatically.
+8. **Cancel.** **Cancel opening** works at any point until the slot is confirmed in Square. It asks you to confirm first. Every open offer then shows "This opening is no longer available," and no later tap can book it.
 
 Two other options: **Simulate first text attempt failing** shows a failed send being retried in the workflow's Event History, and **Turn on alerts** shows browser notifications when something needs staff.
 
@@ -56,9 +64,9 @@ Two other options: **Simulate first text attempt failing** shows a failed send b
 | Square stays the real calendar, and nothing books automatically. | A yes only *holds* the slot. Staff confirm and update Square themselves. |
 | If a hold can't be confirmed, release it and offer it to the next person, automatically after about 15 minutes. | **Release hold** button, plus an automatic release after 15 minutes. |
 | Simulated texts must be clearly labelled during the demo, so nobody mistakes them for real messages. | Every page has a **Demo** banner, and each message appears in a dashed bubble marked **Simulated text — not sent**. The history and Worker logs say "simulated" too. |
-| She wants it warm and calm, not like a technical dashboard, with soft, welcoming colors. | Linen and sage colors with blush and honey accents, a gentle serif for headings, rounded cards, and friendlier words ("Open chairs", "Waiting for your OK", "Someone cancelled? Add the opening"). |
-| Lena and Carla are usually with clients when a cancellation comes in. | Simulated texts to the salon phone, a "needs you" count in the tab title, optional browser alerts, and a phone-friendly layout. |
-| Success means refilling at least half of cancellations, up from about 3 in 10. | A refill-rate tile compared against the ~30% baseline and the 50% goal. It counts only openings confirmed in Square, and it's labelled as prototype data. |
+| She wants it warm and calm, not like a technical dashboard, with soft, welcoming colors. Later direction: professional, simple, and accessible to everyone. | A plain, professional booking-software look: a warm off-white background, white cards, one sage green for main actions, and plain words ("Open chairs", "Needs your OK", "Needs you"). Colors, focus outlines and keyboard use follow WCAG 2.2 AA. |
+| Lena and Carla are usually with clients when a cancellation comes in. | Simulated texts to the salon phone, a "needs you" count in the tab title and header, optional browser alerts, and a phone-friendly layout. |
+| Success means refilling at least half of cancellations, up from about 3 in 10. | A refill-rate meter compared against the ~30% baseline and the 50% goal. It counts only openings confirmed in Square, and it's labelled as prototype data. |
 
 ## How Temporal is used
 

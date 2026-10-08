@@ -3,24 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f7f1e9" />
+    <meta name="theme-color" content="#26313B" />
     <meta name="robots" content="noindex" />
-    <title>Juniper Salon · Your offer</title>
+    <title>Your offer – Juniper Salon</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700;6..12,800&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700&display=swap" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="offer-page">
-    <main>
-      <p class="sim-banner" role="note"><span class="sim-label">Demo</span> <strong>Simulated client view — not a real message.</strong> No texts are sent to real phones.</p>
-      <p class="eyebrow">Juniper Salon</p>
-      <h1 id="greeting">A spot just opened up</h1>
-      <section class="offer-card" id="card" aria-live="polite">
-        <p class="muted">Loading your offer…</p>
-      </section>
-      <p class="demo-note">Prototype: in real life this page would open from the text message link. No real texts are sent.</p>
+    <section class="demo-strip" role="region" aria-label="Demo notice">
+      <div class="demo-strip-inner">
+        <span class="demo-pill">Demo</span>
+        <p><strong>Simulated client view. Not a real message.</strong> No texts are sent to real phones.</p>
+      </div>
+    </section>
+
+    <header class="biz">
+      <div class="biz-inner">
+        <span class="monogram" aria-hidden="true">JS</span>
+        <div>
+          <p class="biz-name">Juniper Salon</p>
+          <p class="biz-sub">Sample salon · <a class="salon-tel" href="tel:+15550100100">Call (555) 010-0100</a></p>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1" aria-busy="true">
+      <h1 id="greeting" tabindex="-1">A spot just opened up</h1>
+      <div id="card">
+        <div class="skeleton-card" aria-hidden="true"></div>
+        <p class="sr-only">Loading your offer</p>
+      </div>
+      <div id="offer-status" class="sr-only" role="status"></div>
     </main>
+
+    <footer class="trust">
+      <p>You're getting this because you joined Juniper Salon's waitlist.</p>
+      <p><a class="salon-tel" href="tel:+15550100100">Questions? Call the salon</a> · Stop waitlist texts (demo only, not active)</p>
+      <p>Prototype: in real life this page opens from a text message link. No real texts are sent.</p>
+    </footer>
     <script src="/offer.js"></script>
   </body>
 </html>

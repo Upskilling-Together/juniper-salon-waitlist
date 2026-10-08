@@ -3,95 +3,238 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f7f1e9" />
-    <title>Juniper Salon · Open chairs</title>
+    <meta name="theme-color" content="#F7F5F2" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171412" media="(prefers-color-scheme: dark)" />
+    <title>Open chairs – Juniper Salon</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700;6..12,800&display=swap" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700&display=swap" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
-    <main>
-      <header class="topbar">
-        <div class="brand">
-          <p class="eyebrow">Juniper Salon · Prototype</p>
+  <body class="staff-page">
+    <a class="skip-link" href="#main">Skip to main content</a>
+
+    <header class="appbar">
+      <div class="appbar-inner">
+        <div class="appbar-id">
+          <span class="wordmark">Juniper Salon</span>
+          <span class="appbar-sep" aria-hidden="true"></span>
           <h1>Open chairs</h1>
-          <p class="subtitle">Filling last-minute openings from your waitlist, one calm step at a time.</p>
         </div>
-        <div class="row">
-          <span class="attention-pill" id="attention" hidden></span>
-          <button class="secondary small-btn" id="alerts-btn" data-action="alerts" hidden>Turn on alerts</button>
-          <span class="conn" id="conn">Connecting…</span>
-          <a class="small" id="temporal-ui" href="http://localhost:8233/namespaces/default/workflows" target="_blank" rel="noopener">Temporal Web UI</a>
+        <div class="appbar-actions">
+          <a class="chip chip--warn needs-link" id="attention" href="#needs-you" hidden></a>
+          <span class="conn is-pending" id="conn" role="status"><span class="conn-dot" aria-hidden="true"></span><span id="conn-text">Connecting…</span></span>
+          <button type="button" class="btn btn-quiet" id="alerts-btn" data-action="alerts" hidden>
+            <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></svg>
+            Turn on alerts
+          </button>
         </div>
-      </header>
+        <button type="button" class="btn btn-primary" id="add-opening-btn" data-action="add-opening">
+          <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+          Add opening
+        </button>
+      </div>
+    </header>
 
-      <p class="sim-banner" role="note"><span class="sim-label">Demo</span> <strong>Every text in this prototype is simulated — nothing is sent to real phones.</strong> Texts appear on screen marked <span class="sim-label">Simulated text</span>. Use <em>Preview client's text</em> to act as the client.</p>
+    <section class="demo-strip" role="region" aria-label="Demo notice">
+      <div class="demo-strip-inner">
+        <span class="demo-pill">Demo</span>
+        <p><strong>Every text here is simulated. Nothing is sent to real phones.</strong> <span class="demo-more">Use “Preview client’s text” to act as the client.</span></p>
+      </div>
+    </section>
 
-      <section class="tiles" id="tiles" aria-label="Summary"></section>
+    <main id="main" tabindex="-1">
+      <h2 class="sr-only">Today at a glance</h2>
+      <ul class="summary" id="summary"></ul>
 
-      <details class="panel new-opening" id="new-opening">
-        <summary class="panel-head">
-          <h2>Someone cancelled? Add the opening</h2>
-          <span class="btn secondary small">Add opening</span>
-        </summary>
-        <form id="opening-form" autocomplete="off">
-          <div class="form-grid">
-            <label class="field">Service <select name="service" id="f-service" required></select></label>
-            <label class="field">Stylist <select name="stylist" id="f-stylist" required></select></label>
-            <label class="field">Date <input type="date" name="date" id="f-date" required /></label>
-            <label class="field">Time <input type="time" name="time" id="f-time" step="300" required /></label>
-            <label class="field">Duration (min) <input type="number" name="durationMinutes" min="15" max="480" step="5" value="60" required /></label>
-            <label class="field">Texts per round
-              <select name="batchSize">
-                <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option>
-              </select>
-            </label>
-            <label class="field">Reply window
-              <select name="replyWindow" id="f-window">
-                <option value="auto" selected>Auto (15 min today, 60 min later)</option>
-                <option value="10">10 min</option>
-                <option value="15">15 min</option>
-                <option value="30">30 min</option>
-                <option value="60">1 hour</option>
-                <option value="120">2 hours</option>
-                <option value="fast">Fast demo: 30 seconds</option>
-              </select>
-            </label>
-          </div>
-          <label class="check"><input type="checkbox" name="simulateTextFailure" />
-            <span>Simulate first text attempt failing <span class="muted small">(shows Temporal retrying the text in the Event History)</span></span>
-          </label>
-          <p class="muted small" id="window-hint"></p>
-          <div class="row">
-            <button type="submit" id="create-btn">Find matches</button>
-            <span class="form-error" id="form-error" role="alert"></span>
-          </div>
-          <p class="muted small">Nothing is texted yet — you'll approve who gets offered first. A client's yes holds the slot until you confirm it in Square.</p>
-        </form>
-      </details>
+      <div class="segmented view-switch" role="group" aria-label="View" id="view-switch">
+        <button type="button" data-view="openings" aria-pressed="true">Openings <span class="num" id="vs-openings"></span></button>
+        <button type="button" data-view="waitlist" aria-pressed="false">Waitlist <span class="num" id="vs-waitlist"></span></button>
+      </div>
 
-      <div class="layout" style="margin-top: 16px">
-        <section aria-label="Openings">
-          <div class="panel-head"><h2>Openings</h2><span class="muted small" id="updated"></span></div>
-          <div class="openings" id="openings"><div class="empty panel">Loading…</div></div>
-        </section>
-        <section class="panel" aria-label="Waitlist">
-          <div class="panel-head">
-            <h2>Waitlist</h2>
-            <div class="chips" id="wl-filter">
-              <button class="secondary" data-filter="waiting">Waiting</button>
-              <button class="secondary" data-filter="booked">Booked</button>
-              <button class="secondary" data-filter="all">All</button>
+      <div class="columns">
+        <section id="openings-view" aria-labelledby="openings-h">
+          <div class="section-head">
+            <h2 id="openings-h">Openings</h2>
+            <div class="segmented" role="group" aria-label="Show openings" id="op-tabs">
+              <button type="button" data-tab="active" aria-pressed="true">Active <span class="num" id="tab-active-n"></span></button>
+              <button type="button" data-tab="finished" aria-pressed="false">Finished <span class="num" id="tab-finished-n"></span></button>
             </div>
           </div>
-          <p><span class="sample-label" id="wl-source">Sample data — imported from the salon's Google Sheet</span></p>
-          <p class="muted tiny">Fictional clients and 555 numbers. Availability notes are shown exactly as staff wrote them; tags are a rough guess used only for suggestions.</p>
-          <div id="waitlist"></div>
+
+          <div class="notice" id="filter-note" hidden>
+            <p id="filter-note-text"></p>
+            <button type="button" class="btn btn-quiet btn-sm" data-action="clear-stat">Show all openings</button>
+          </div>
+
+          <div id="loading" class="loading">
+            <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+          </div>
+
+          <div class="empty-card" id="empty-openings" hidden>
+            <p><strong>No open chairs right now.</strong></p>
+            <p class="muted">When a client cancels, add the opening and we'll suggest who to text.</p>
+            <button type="button" class="btn btn-primary" data-action="add-opening">Add opening</button>
+          </div>
+
+          <div id="active-groups" hidden>
+            <h3 class="group-h" id="needs-you" tabindex="-1">Needs you <span class="num" id="needs-n"></span></h3>
+            <p class="muted" id="needs-empty" hidden>Nothing needs you right now.</p>
+            <div class="group" id="group-needs"></div>
+            <div id="waiting-section">
+              <h3 class="group-h">Waiting on clients <span class="num" id="waiting-n"></span></h3>
+              <div class="group" id="group-waiting"></div>
+            </div>
+          </div>
+
+          <div id="finished-group" hidden>
+            <h3 class="sr-only">Finished</h3>
+            <p class="muted" id="finished-empty" hidden>Finished openings will show here.</p>
+            <div class="group" id="group-finished"></div>
+          </div>
         </section>
+
+        <aside id="waitlist-view" class="waitlist" aria-labelledby="waitlist-h">
+          <h2 id="waitlist-h">Waitlist</h2>
+          <div class="segmented segmented--fill" role="group" aria-label="Show clients" id="wl-filter">
+            <button type="button" data-filter="waiting" aria-pressed="true">Waiting</button>
+            <button type="button" data-filter="booked" aria-pressed="false">Booked</button>
+            <button type="button" data-filter="all" aria-pressed="false">All</button>
+          </div>
+          <div class="wl-filters">
+            <div class="field">
+              <label for="wl-stylist">Stylist</label>
+              <select id="wl-stylist"><option value="">Any</option></select>
+            </div>
+            <div class="field">
+              <label for="wl-service">Service</label>
+              <select id="wl-service"><option value="">Any</option></select>
+            </div>
+          </div>
+          <p class="wl-source"><span class="chip chip--neutral">Sample data</span> <span>Imported from the salon's Google Sheet. Fictional clients and 555 numbers. Notes are shown exactly as staff wrote them.</span></p>
+          <ul class="clients" id="waitlist"></ul>
+        </aside>
       </div>
+
+      <div class="refill" id="refill" role="group" aria-labelledby="refill-h"></div>
+
+      <footer class="page-foot">
+        <span>Technical details:</span>
+        <a id="temporal-ui" href="http://localhost:8233/namespaces/default/workflows" target="_blank" rel="noopener">Temporal Web UI<span class="sr-only"> (opens in new tab)</span></a>
+        <span id="updated"></span>
+      </footer>
     </main>
-    <div class="toast" id="toast" hidden></div>
+
+    <dialog id="opening-dialog" class="drawer" aria-labelledby="opening-dialog-h">
+      <form id="opening-form" autocomplete="off" novalidate>
+        <div class="drawer-head">
+          <h2 id="opening-dialog-h">Add an opening</h2>
+          <button type="button" class="btn btn-quiet icon-btn" data-close-dialog aria-label="Close">
+            <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div class="drawer-body">
+          <p class="muted">Nothing is texted yet. You'll approve who gets offered first. A client's yes holds the slot until you confirm it in Square.</p>
+
+          <div class="error-summary" id="error-summary" role="alert" tabindex="-1" hidden>
+            <h3>There is a problem</h3>
+            <ul id="error-list"></ul>
+          </div>
+
+          <div class="field">
+            <label for="f-service">Service</label>
+            <p class="field-error" id="f-service-err" hidden></p>
+            <select name="service" id="f-service" aria-describedby="f-service-err" required></select>
+          </div>
+          <div class="field">
+            <label for="f-stylist">Stylist</label>
+            <p class="field-error" id="f-stylist-err" hidden></p>
+            <select name="stylist" id="f-stylist" aria-describedby="f-stylist-err" required></select>
+          </div>
+          <div class="field">
+            <label for="f-date">Date</label>
+            <p class="field-error" id="f-date-err" hidden></p>
+            <input type="date" name="date" id="f-date" aria-describedby="f-date-err" required />
+          </div>
+          <div class="field">
+            <label for="f-time">Time</label>
+            <p class="hint" id="f-time-hint">Start time of the appointment</p>
+            <p class="field-error" id="f-time-err" hidden></p>
+            <input type="time" name="time" id="f-time" step="300" aria-describedby="f-time-hint f-time-err" required />
+          </div>
+          <div class="field">
+            <label for="f-duration">Length of appointment</label>
+            <p class="hint" id="f-duration-hint">In minutes, 15 to 480</p>
+            <p class="field-error" id="f-duration-err" hidden></p>
+            <input type="number" inputmode="numeric" name="durationMinutes" id="f-duration" min="15" max="480" value="60" aria-describedby="f-duration-hint f-duration-err" required />
+          </div>
+
+          <details class="form-details">
+            <summary id="offer-settings-summary">Offer settings: up to 3 per round · reply window set automatically</summary>
+            <fieldset class="form-fieldset">
+              <legend>How to offer it</legend>
+              <div class="field">
+                <label for="f-batch">Texts per round</label>
+                <p class="hint" id="f-batch-hint">How many people get the text at the same time</p>
+                <select name="batchSize" id="f-batch" aria-describedby="f-batch-hint">
+                  <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="f-window">Reply window</label>
+                <p class="hint" id="window-hint"></p>
+                <select name="replyWindow" id="f-window" aria-describedby="window-hint">
+                  <option value="auto" selected>Auto (15 min today, 60 min later)</option>
+                  <option value="10">10 min</option>
+                  <option value="15">15 min</option>
+                  <option value="30">30 min</option>
+                  <option value="60">1 hour</option>
+                  <option value="120">2 hours</option>
+                  <option value="fast">Fast demo: 30 seconds</option>
+                </select>
+              </div>
+            </fieldset>
+          </details>
+
+          <details class="form-details demo-tools">
+            <summary>Demo tools</summary>
+            <label class="check">
+              <input type="checkbox" name="simulateTextFailure" aria-describedby="f-fail-hint" />
+              <span>Simulate first text attempt failing <span class="hint" id="f-fail-hint">Shows Temporal retrying the text in the Event History.</span></span>
+            </label>
+          </details>
+        </div>
+        <div class="drawer-foot">
+          <button type="submit" class="btn btn-primary" id="create-btn">Find matches</button>
+          <button type="button" class="btn btn-quiet" data-close-dialog>Close without saving</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-h" aria-describedby="confirm-body">
+      <form method="dialog">
+        <h2 id="confirm-h"></h2>
+        <p id="confirm-body"></p>
+        <div class="field" id="confirm-reason-field" hidden>
+          <label for="confirm-reason">Reason (optional)</label>
+          <input id="confirm-reason" maxlength="200" />
+        </div>
+        <p class="meta">Any texts are simulated.</p>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" id="confirm-safe">Go back</button>
+          <button type="submit" value="ok" class="btn btn-primary" id="confirm-ok">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toasts">
+      <div id="status" class="toast" role="status" aria-live="polite"></div>
+      <div id="alert" class="toast toast-error" role="alert">
+        <span id="alert-text"></span>
+        <button type="button" class="btn btn-sm toast-close" id="alert-close" data-action="close-alert" hidden>Close</button>
+      </div>
+    </div>
+
     <script src="/app.js"></script>
   </body>
 </html>
