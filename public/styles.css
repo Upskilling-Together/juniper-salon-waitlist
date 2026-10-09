@@ -493,6 +493,21 @@ details[open] > summary::before { content: "▾"; content: "▾" / ""; }
 .client-meta { font-size: 0.875rem; color: var(--text-muted); }
 .client-note { font-size: 0.9375rem; }
 .wl-empty { padding: var(--s4) 0; color: var(--text-muted); display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.wl-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--s2) var(--s3); }
+.wl-consent { font-size: 0.875rem; color: var(--text-muted); display: flex; gap: var(--s2); align-items: flex-start; }
+.wl-consent .icon { margin-top: 0.2em; }
+.client-chips { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
+.client-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin-top: var(--s1); }
+.client-row-actions .btn { margin-left: calc(-1 * var(--s3)); }
+.client-row-actions .btn-secondary { margin-left: 0; }
+.client-manage { margin-top: var(--s2); padding: var(--s3); background: var(--surface-sunken); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s2); font-size: 0.875rem; }
+.client-manage dl { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.client-manage dl div { display: flex; flex-wrap: wrap; gap: 0 var(--s2); }
+.client-manage dt { font-weight: 600; color: var(--text-muted); }
+.client-manage dt::after { content: ":"; }
+.client-manage dd { margin: 0; }
+.client-manage .actions { gap: var(--s2); }
+.client.is-removed .client-name { color: var(--text-muted); }
 
 /* ---------- form fields ---------- */
 .field { display: flex; flex-direction: column; gap: var(--s1); }
@@ -505,6 +520,25 @@ details[open] > summary::before { content: "▾"; content: "▾" / ""; }
   background: var(--surface); color: var(--text); font-size: 1rem;
 }
 .field [aria-invalid="true"] { border: 2px solid var(--danger-fg); }
+.field textarea {
+  width: 100%; min-height: 4.5rem; padding: 0.5rem 0.75rem; resize: vertical;
+  border: 1px solid var(--control); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font-size: 1rem; line-height: 1.5;
+}
+.field textarea:focus-visible { border-color: var(--focus); }
+.optional { font-weight: 400; color: var(--text-muted); }
+.choice-group { gap: var(--s2); }
+.choice-group[aria-invalid="true"] .radio input, .choice-group.is-invalid .radio input { outline: 2px solid var(--danger-fg); outline-offset: 1px; }
+.radio { display: flex; gap: var(--s3); align-items: flex-start; min-height: 44px; padding: var(--s2) 0; cursor: pointer; }
+.radio input { width: 22px; height: 22px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
+.radio > span { display: flex; flex-direction: column; font-weight: 600; }
+.radio .hint { font-weight: 400; }
+.choice-group .field { margin-top: var(--s1); }
+.hours-note { font-size: 0.875rem; color: var(--text-muted); display: flex; gap: var(--s2); align-items: flex-start; }
+.hours-note .icon { margin-top: 0.2em; }
+.opening-note { font-size: 0.875rem; color: var(--text-muted); display: flex; gap: var(--s2); align-items: flex-start; }
+.opening-note .icon { margin-top: 0.2em; }
+.panel--info { border-left: 4px solid var(--info-fg); }
 .check { display: flex; gap: var(--s3); align-items: flex-start; cursor: pointer; }
 .check > span { display: flex; flex-direction: column; }
 
@@ -632,3 +666,4 @@ dialog::backdrop { background: var(--backdrop); }
   .btn-primary, .segmented button[aria-pressed="true"] { border: 1px solid ButtonText; }
   .meter-fill { background: Highlight; }
 }
+.client-manage .actions > .btn-danger-quiet:first-child { margin-left: calc(-1 * var(--s3)); }

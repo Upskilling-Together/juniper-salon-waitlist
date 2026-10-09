@@ -15,6 +15,10 @@ export type ClientOfferView =
       when: string;
       durationMinutes: number;
       deadline?: number;
+      /** The reply window this client actually got (shorter than the opening's setting when capped by the cutoff). */
+      replyWindowSeconds?: number;
+      /** True when the window was shortened so replies close before the start-time cutoff. */
+      windowCapped: boolean;
       fastDemo: boolean;
       /** Exact wording of the simulated text that "brought" the client here. */
       smsText?: string;
@@ -39,6 +43,8 @@ export function clientOfferView(state: OpeningState, clientId: string, token: st
     when: formatSlot(state.opening.startsAt),
     durationMinutes: state.opening.durationMinutes,
     deadline: offer.deadline,
+    replyWindowSeconds: offer.replyWindowSeconds ?? state.opening.replyWindowSeconds,
+    windowCapped: offer.windowCapped === true,
     fastDemo: state.opening.fastDemo,
     smsText: offer.smsText,
     roundSize: state.offers.filter((o) => o.round === offer.round).length,

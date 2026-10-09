@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ApplicationFailure, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { describeStylistRule } from "./matching";
+import { describeStylistRule, notTextableReason } from "./matching";
 import {
+  addClient,
   approveMatches,
   cancelOpening,
   getOpening,
@@ -11,24 +12,42 @@ import {
   keepTrying,
   leaveOpen,
   markSquareDone,
+  recordConsent,
   releaseHold,
+  removeClient,
   resolveLateYes,
   respond,
   TASK_QUEUE,
   WAITLIST_WORKFLOW_ID,
 } from "./messages";
 import { clientOfferView } from "./offerView";
+import {
+  DEFAULT_REPLY_WINDOW_MINUTES,
+  DEFAULT_STOP_OFFERING_MINUTES,
+  LAST_MINUTE_HOURS,
+  MIN_CAPPED_REPLY_WINDOW_MINUTES,
+  STAFF_ALERT_RECIPIENTS,
+  STOP_OFFERING_OPTIONS_MINUTES,
+  TEXTING_HOURS,
+} from "./rules";
 import { ensureWaitlist, getClient, listOpenings, NAMESPACE, type OpeningListing } from "./temporal";
 import {
   CLIENT_MESSAGES,
+  CONSENT_LABELS,
+  DURATION_LIMITS_MINUTES,
+  SAMPLE_STYLIST_NOTE,
+  SAMPLE_STYLISTS,
+  SERVICE_DEFAULT_DURATION_MINUTES,
   SERVICES,
   STYLISTS,
+  TEXTING_CONSENTS,
   type OpeningInput,
   type OpeningState,
   type RespondResult,
   type Service,
   type Stylist,
 } from "./types";
+import { checkAddClientInput } from "./waitlistInput";
 import type { openingWorkflow } from "./workflows";
 
 const TEMPORAL_UI = process.env.TEMPORAL_UI ?? "http://localhost:8233";
@@ -76,23 +95,28 @@ function parseLocalDateTime(startsAt: string): number | undefined {
 }
 const PAST_GRACE_MS = 5 * 60 * 1000;
 
-/** Default reply window: 15 min for a same-day opening, 60 min for later. */
+/** Default reply window: 15 min for a same-day opening, 2 hours for later (see DEFAULT_REPLY_WINDOW_MINUTES). */
 function defaultReplyWindowMinutes(startsAt: string): number {
-  return startsAt.slice(0, 10) === localDateString() ? 15 : 60;
+  return startsAt.slice(0, 10) === localDateString() ? DEFAULT_REPLY_WINDOW_MINUTES.sameDay : DEFAULT_REPLY_WINDOW_MINUTES.later;
 }
 
-function readableUpdateError(error: unknown): { status: number; message: string } | undefined {
+function readableUpdateError(
+  error: unknown,
+  closedMessage = "This opening has already closed.",
+): { status: number; message: string } | undefined {
   if (error instanceof WorkflowUpdateFailedError) {
     const cause = error.cause;
     const message = cause?.message || error.message;
     if (cause instanceof ApplicationFailure && cause.type === "InvalidOfferLink") return { status: 403, message };
+    if (cause instanceof ApplicationFailure && cause.type === "InvalidWaitlistInput") return { status: 400, message };
+    if (cause instanceof ApplicationFailure && cause.type === "WaitlistClientNotFound") return { status: 404, message };
     return { status: 409, message };
   }
   if (error instanceof WorkflowNotFoundError) {
-    return { status: 409, message: "This opening has already closed." };
+    return { status: 409, message: closedMessage };
   }
   if (error instanceof Error && /already completed|not found/i.test(error.message)) {
-    return { status: 409, message: "This opening has already closed." };
+    return { status: 409, message: closedMessage };
   }
   return undefined;
 }
@@ -141,6 +165,18 @@ app.get("/api/meta", (_request, response) => {
   response.json({
     services: SERVICES,
     stylists: STYLISTS,
+    sampleStylists: SAMPLE_STYLISTS,
+    sampleStylistNote: SAMPLE_STYLIST_NOTE,
+    serviceDurations: SERVICE_DEFAULT_DURATION_MINUTES,
+    durationLimits: DURATION_LIMITS_MINUTES,
+    stopOfferingOptions: STOP_OFFERING_OPTIONS_MINUTES,
+    defaultStopOfferingMinutes: DEFAULT_STOP_OFFERING_MINUTES,
+    minCappedReplyWindowMinutes: MIN_CAPPED_REPLY_WINDOW_MINUTES,
+    replyWindowDefaults: { sameDayMinutes: DEFAULT_REPLY_WINDOW_MINUTES.sameDay, laterMinutes: DEFAULT_REPLY_WINDOW_MINUTES.later },
+    textingHours: { ...TEXTING_HOURS, note: "Lena: \"sounds about right\". Same-day openings and Fast demo ignore texting hours." },
+    lastMinuteHours: LAST_MINUTE_HOURS,
+    staffAlertRecipients: STAFF_ALERT_RECIPIENTS.map((r) => r.name),
+    consentOptions: TEXTING_CONSENTS.map((value) => ({ value, label: CONSENT_LABELS[value] })),
     today: localDateString(),
     fastDemoSeconds: FAST_DEMO_SECONDS,
     temporalUi: TEMPORAL_UI,
@@ -160,10 +196,25 @@ const STATUS_PRIORITY: Record<string, number> = {
   cancelled: 7,
 };
 
+/**
+ * Lena's "last-minute" (the 3-in-10 baseline and 50% goal): the appointment starts within 48 hours of
+ * when the opening was added. Only these count toward the refill rate.
+ */
+function isLastMinute(state: OpeningState | undefined, addedAt: Date): boolean | undefined {
+  if (!state || state.opening.startsAtMs === undefined) return undefined;
+  const added = state.history[0]?.at ?? addedAt.getTime();
+  return state.opening.startsAtMs - added <= LAST_MINUTE_HOURS * 3600 * 1000;
+}
+
 function summarise(listing: OpeningListing) {
   const s = listing.state;
   const key = s ? (s.status === "filled" && !s.square.done ? "filled_todo" : s.status) : "unknown";
-  return { ...listing, temporalUrl: temporalLink(listing.workflowId), sortKey: STATUS_PRIORITY[key] ?? 9 };
+  return {
+    ...listing,
+    temporalUrl: temporalLink(listing.workflowId),
+    sortKey: STATUS_PRIORITY[key] ?? 9,
+    lastMinute: isLastMinute(s, listing.startTime),
+  };
 }
 
 app.get("/api/dashboard", async (_request, response) => {
@@ -181,16 +232,23 @@ app.get("/api/dashboard", async (_request, response) => {
     .map(summarise)
     .sort((a, b) => a.sortKey - b.sortKey || b.startTime.getTime() - a.startTime.getTime());
 
-  // Refill rate: confirmed (Square done) ÷ (confirmed + unfilled + left open).
-  // Cancelled and still-held openings are excluded: a hold can still be released.
+  // Refill rate: confirmed (Square done) ÷ (confirmed + unfilled + left open), LAST-MINUTE openings only
+  // (start within 48 h of being added — Lena's definition for the baseline and goal). Openings further
+  // ahead are counted separately. Cancelled and still-held openings are excluded: a hold can still be released.
   const counts = { filled: 0, held: 0, unfilled: 0, leftOpen: 0, cancelled: 0 };
+  const later = { filled: 0, closed: 0 };
   const holding = new Map<string, { openingId: string; deadline?: number; held?: boolean }>();
   for (const o of listings) {
     if (!o.state) continue;
-    if (o.state.status === "filled") o.state.square.done ? counts.filled++ : counts.held++;
-    else if (o.state.status === "unfilled") counts.unfilled++;
-    else if (o.state.status === "left_open") counts.leftOpen++;
-    else if (o.state.status === "cancelled") counts.cancelled++;
+    const st = o.state.status;
+    if (isLastMinute(o.state, o.startTime) === false) {
+      const done = st === "filled" && o.state.square.done;
+      if (done) later.filled++;
+      if (done || st === "unfilled" || st === "left_open") later.closed++;
+    } else if (st === "filled") o.state.square.done ? counts.filled++ : counts.held++;
+    else if (st === "unfilled") counts.unfilled++;
+    else if (st === "left_open") counts.leftOpen++;
+    else if (st === "cancelled") counts.cancelled++;
     for (const offer of o.state.offers) {
       if (offer.status === "live" || offer.status === "sending") {
         holding.set(offer.clientId, { openingId: o.workflowId, deadline: offer.deadline });
@@ -211,6 +269,8 @@ app.get("/api/dashboard", async (_request, response) => {
       rate: denominator ? counts.filled / denominator : null,
       goal: REFILL_GOAL,
       baseline: REFILL_BASELINE,
+      lastMinuteHours: LAST_MINUTE_HOURS,
+      later,
       label: "Prototype data — not proof of the business goal",
     },
     waitlist:
@@ -222,6 +282,9 @@ app.get("/api/dashboard", async (_request, response) => {
             clients: waitlist.clients.map((c) => ({
               ...c,
               stylistRuleText: describeStylistRule(c.stylistRule),
+              consentText: CONSENT_LABELS[c.textingConsent] ?? CONSENT_LABELS.not_asked,
+              /** Waiting and opted in: can be suggested and texted. */
+              textable: c.status === "waiting" && !notTextableReason(waitlist.clients, c.id),
               holding: holding.get(c.id),
             })),
           }
@@ -235,6 +298,58 @@ app.get("/api/waitlist", async (_request, response) => {
   response.json(await client.workflow.getHandle(WAITLIST_WORKFLOW_ID).query(getWaitlist));
 });
 
+async function waitlistHandle() {
+  const client = await getClient();
+  await ensureWaitlist(client);
+  return client.workflow.getHandle(WAITLIST_WORKFLOW_ID);
+}
+
+/** Run a waitlist Update; validator refusals become 400 (bad input) or 409 (refused), never 500. */
+async function waitlistAction(response: Response, run: () => Promise<unknown>, status = 200) {
+  try {
+    response.status(status).json(await run());
+  } catch (error) {
+    const readable = readableUpdateError(error, "The waitlist isn't running right now — try again in a moment.");
+    if (!readable) throw error;
+    response.status(readable.status).json({ ok: false, error: readable.message });
+  }
+}
+
+const clientIdParam = (request: Request) => {
+  const id = String(request.params.clientId);
+  if (!/^[a-z0-9-]{1,40}$/i.test(id)) throw new HttpError(404, "That person isn't on the waitlist.");
+  return id;
+};
+
+// Staff "Add to waitlist" (joins at the back of the line).
+app.post("/api/waitlist", async (request, response) => {
+  const checked = checkAddClientInput(request.body);
+  if (!checked.ok) {
+    response.status(400).json({ ok: false, error: checked.errors.map((e) => e.message).join(" "), fieldErrors: checked.errors });
+    return;
+  }
+  await waitlistAction(response, async () => (await waitlistHandle()).executeUpdate(addClient, { args: [checked.value] }), 201);
+});
+
+// Only when the client asked to come off the list.
+app.post("/api/waitlist/:clientId/remove", async (request, response) => {
+  const clientId = clientIdParam(request);
+  const reason = typeof request.body?.reason === "string" ? request.body.reason.slice(0, 200) : undefined;
+  await waitlistAction(response, async () => (await waitlistHandle()).executeUpdate(removeClient, { args: [{ clientId, reason }] }));
+});
+
+// Record the answer to "Can we text you about earlier openings?".
+app.post("/api/waitlist/:clientId/consent", async (request, response) => {
+  const clientId = clientIdParam(request);
+  const textingConsent = request.body?.textingConsent;
+  if (textingConsent !== "opted_in" && textingConsent !== "opted_out") {
+    throw new HttpError(400, "Choose Opted in or Opted out.");
+  }
+  await waitlistAction(response, async () =>
+    (await waitlistHandle()).executeUpdate(recordConsent, { args: [{ clientId, textingConsent }] }),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Openings (staff)
 // ---------------------------------------------------------------------------
@@ -243,8 +358,15 @@ app.post("/api/openings", async (request, response) => {
   const service = body.service as Service;
   const stylist = body.stylist as Stylist;
   const startsAt = String(body.startsAt ?? "").slice(0, 16);
-  const durationMinutes = Number(body.durationMinutes ?? 60);
+  const durationMinutes =
+    body.durationMinutes == null || body.durationMinutes === ""
+      ? (SERVICE_DEFAULT_DURATION_MINUTES[service] ?? 60)
+      : Number(body.durationMinutes);
   const batchSize = Number(body.batchSize ?? 3);
+  const stopOfferingMinutesBefore =
+    body.stopOfferingMinutesBefore == null || body.stopOfferingMinutesBefore === ""
+      ? DEFAULT_STOP_OFFERING_MINUTES
+      : Number(body.stopOfferingMinutesBefore);
   const fastDemo = Boolean(body.fastDemo);
   const simulateTextFailure = Boolean(body.simulateTextFailure);
 
@@ -254,8 +376,12 @@ app.post("/api/openings", async (request, response) => {
   const startsAtMs = parseLocalDateTime(startsAt);
   if (startsAtMs === undefined) throw new HttpError(400, "Pick a valid date and time.");
   if (startsAtMs < Date.now() - PAST_GRACE_MS) throw new HttpError(400, "That time has already passed.");
-  if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 480) {
-    throw new HttpError(400, "Duration must be between 15 and 480 minutes.");
+  const { min, max } = DURATION_LIMITS_MINUTES;
+  if (!Number.isInteger(durationMinutes) || durationMinutes < min || durationMinutes > max) {
+    throw new HttpError(400, `Duration must be between ${min} and ${max} minutes.`);
+  }
+  if (!(STOP_OFFERING_OPTIONS_MINUTES as readonly number[]).includes(stopOfferingMinutesBefore)) {
+    throw new HttpError(400, `"Stop offering" must be one of ${STOP_OFFERING_OPTIONS_MINUTES.join(", ")} minutes before it starts.`);
   }
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 5) {
     throw new HttpError(400, "Texts per round must be between 1 and 5.");
@@ -280,6 +406,7 @@ app.post("/api/openings", async (request, response) => {
     durationMinutes,
     batchSize,
     replyWindowSeconds,
+    stopOfferingMinutesBefore,
     fastDemo,
     simulateTextFailure,
   };

@@ -1,7 +1,7 @@
 // Temporal Client helpers used by the API process and by Activities in the Worker process.
 import { Client, Connection, WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
-import { getOpening, TASK_QUEUE, WAITLIST_WORKFLOW_ID } from "./messages";
-import type { OpeningState } from "./types";
+import { getOpening, getWaitlist, TASK_QUEUE, WAITLIST_WORKFLOW_ID } from "./messages";
+import type { OpeningState, WaitlistClient } from "./types";
 import type { waitlistWorkflow } from "./workflows";
 
 export const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
@@ -33,6 +33,15 @@ export async function ensureWaitlist(client: Client): Promise<void> {
     throw error;
   }
 }
+
+/** Where Activities read the current waitlist for the consent re-check (tests swap in a fixed list). */
+export const waitlistSource = {
+  async load(): Promise<WaitlistClient[]> {
+    const client = await getClient();
+    await ensureWaitlist(client);
+    return (await client.workflow.getHandle(WAITLIST_WORKFLOW_ID).query(getWaitlist)).clients;
+  },
+};
 
 export type OpeningListing = {
   workflowId: string;

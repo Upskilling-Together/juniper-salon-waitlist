@@ -95,7 +95,13 @@
         </section>
 
         <aside id="waitlist-view" class="waitlist" aria-labelledby="waitlist-h">
-          <h2 id="waitlist-h">Waitlist</h2>
+          <div class="wl-head">
+            <h2 id="waitlist-h">Waitlist</h2>
+            <button type="button" class="btn btn-secondary btn-sm" id="add-client-btn" data-action="add-client">
+              <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              Add to waitlist
+            </button>
+          </div>
           <div class="segmented segmented--fill" role="group" aria-label="Show clients" id="wl-filter">
             <button type="button" data-filter="waiting" aria-pressed="true">Waiting</button>
             <button type="button" data-filter="booked" aria-pressed="false">Booked</button>
@@ -111,7 +117,8 @@
               <select id="wl-service"><option value="">Any</option></select>
             </div>
           </div>
-          <p class="wl-source"><span class="chip chip--neutral">Sample data</span> <span>Imported from the salon's Google Sheet. Fictional clients and 555 numbers. Notes are shown exactly as staff wrote them.</span></p>
+          <p class="wl-source"><span class="chip chip--neutral">Sample data</span> <span>Imported from the salon's Google Sheet. Fictional clients and 555 numbers. Notes are shown exactly as staff wrote them. <span id="wl-sample-stylists">Sam, Jules and Nico are sample stylist names (confirm with Lena).</span></span></p>
+          <p class="wl-consent" id="wl-consent"></p>
           <ul class="clients" id="waitlist"></ul>
         </aside>
       </div>
@@ -148,8 +155,9 @@
           </div>
           <div class="field">
             <label for="f-stylist">Stylist</label>
+            <p class="hint sample-stylist-hint" id="f-stylist-hint">Sam, Jules and Nico are sample names. Confirm with Lena.</p>
             <p class="field-error" id="f-stylist-err" hidden></p>
-            <select name="stylist" id="f-stylist" aria-describedby="f-stylist-err" required></select>
+            <select name="stylist" id="f-stylist" aria-describedby="f-stylist-hint f-stylist-err" required></select>
           </div>
           <div class="field">
             <label for="f-date">Date</label>
@@ -164,13 +172,13 @@
           </div>
           <div class="field">
             <label for="f-duration">Length of appointment</label>
-            <p class="hint" id="f-duration-hint">In minutes, 15 to 480</p>
+            <p class="hint" id="f-duration-hint">In minutes, 30 to 180. Filled in from the service; change it if needed.</p>
             <p class="field-error" id="f-duration-err" hidden></p>
-            <input type="number" inputmode="numeric" name="durationMinutes" id="f-duration" min="15" max="480" value="60" aria-describedby="f-duration-hint f-duration-err" required />
+            <input type="number" inputmode="numeric" name="durationMinutes" id="f-duration" min="30" max="180" step="5" value="45" aria-describedby="f-duration-hint f-duration-err" required />
           </div>
 
           <details class="form-details">
-            <summary id="offer-settings-summary">Offer settings: up to 3 per round · reply window set automatically</summary>
+            <summary id="offer-settings-summary">Offer settings: up to 3 per round · auto reply window · stop 1 hour before</summary>
             <fieldset class="form-fieldset">
               <legend>How to offer it</legend>
               <div class="field">
@@ -184,7 +192,7 @@
                 <label for="f-window">Reply window</label>
                 <p class="hint" id="window-hint"></p>
                 <select name="replyWindow" id="f-window" aria-describedby="window-hint">
-                  <option value="auto" selected>Auto (15 min today, 60 min later)</option>
+                  <option value="auto" selected>Auto (15 min today, 2 hours later)</option>
                   <option value="10">10 min</option>
                   <option value="15">15 min</option>
                   <option value="30">30 min</option>
@@ -193,6 +201,21 @@
                   <option value="fast">Fast demo: 30 seconds</option>
                 </select>
               </div>
+              <div class="field">
+                <label for="f-stop">Stop offering … before it starts</label>
+                <p class="hint" id="f-stop-hint">Leaves time for the client to get here. Each reply window is shortened so it ends by then.</p>
+                <select name="stopOfferingMinutesBefore" id="f-stop" aria-describedby="f-stop-hint">
+                  <option value="30">30 min</option>
+                  <option value="45">45 min</option>
+                  <option value="60" selected>1 hour</option>
+                  <option value="90">1 hour 30 min</option>
+                  <option value="120">2 hours</option>
+                </select>
+              </div>
+              <p class="hours-note" id="texting-hours-note">
+                <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                <span id="texting-hours-text">Offer texts go out 9:00 AM–8:00 PM salon time (Lena: “sounds about right”). Same-day openings can be texted any time. Fast demo ignores texting hours.</span>
+              </p>
             </fieldset>
           </details>
 
@@ -211,6 +234,96 @@
       </form>
     </dialog>
 
+    <dialog id="client-dialog" class="drawer" aria-labelledby="client-dialog-h">
+      <form id="client-form" autocomplete="off" novalidate>
+        <div class="drawer-head">
+          <h2 id="client-dialog-h">Add to waitlist</h2>
+          <button type="button" class="btn btn-quiet icon-btn" data-close-dialog aria-label="Close">
+            <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div class="drawer-body">
+          <p class="muted">They join at the back of the line. Nobody is texted until you approve them for an opening, and only if they've opted in.</p>
+
+          <div class="error-summary" id="cl-error-summary" role="alert" tabindex="-1" hidden>
+            <h3>There is a problem</h3>
+            <ul id="cl-error-list"></ul>
+          </div>
+
+          <div class="field">
+            <label for="cl-name">Name</label>
+            <p class="field-error" id="cl-name-err" hidden></p>
+            <input type="text" name="name" id="cl-name" maxlength="80" autocomplete="off" aria-describedby="cl-name-err" required />
+          </div>
+          <div class="field">
+            <label for="cl-mobile">Mobile number</label>
+            <p class="hint" id="cl-mobile-hint">Demo: use a fictional 555 number, like <span class="nw">(555) 010-0150</span></p>
+            <p class="field-error" id="cl-mobile-err" hidden></p>
+            <input type="tel" inputmode="tel" name="mobile" id="cl-mobile" maxlength="20" autocomplete="off" aria-describedby="cl-mobile-hint cl-mobile-err" required />
+          </div>
+          <div class="field">
+            <label for="cl-service">Service</label>
+            <p class="field-error" id="cl-service-err" hidden></p>
+            <select name="service" id="cl-service" aria-describedby="cl-service-err" required></select>
+          </div>
+
+          <fieldset class="form-fieldset choice-group" id="cl-rule" aria-describedby="cl-rule-err">
+            <legend>Which stylists will they see?</legend>
+            <p class="field-error" id="cl-rule-err" hidden></p>
+            <label class="radio"><input type="radio" name="ruleKind" value="any" checked /><span>Any stylist <span class="hint">Suggested for every stylist's openings</span></span></label>
+            <label class="radio"><input type="radio" name="ruleKind" value="required" /><span>Only one stylist</span></label>
+            <div class="field" id="cl-preferred-field">
+              <label for="cl-preferred">Preferred stylist <span class="optional">(optional)</span></label>
+              <select name="preferred" id="cl-preferred"></select>
+            </div>
+            <div class="field" id="cl-only-field" hidden>
+              <label for="cl-only">Which stylist?</label>
+              <select name="only" id="cl-only"></select>
+            </div>
+          </fieldset>
+
+          <div class="field">
+            <label for="cl-note">When can they come in? <span class="optional">(optional)</span></label>
+            <p class="hint" id="cl-note-hint">Write it the way they said it, like “weekday afternoons” or “after 5”. It's shown word for word.</p>
+            <p class="field-error" id="cl-note-err" hidden></p>
+            <textarea name="availabilityNote" id="cl-note" rows="2" maxlength="300" aria-describedby="cl-note-hint cl-note-err"></textarea>
+          </div>
+
+          <fieldset class="form-fieldset choice-group" id="cl-consent" aria-describedby="cl-consent-hint cl-consent-known cl-consent-err">
+            <legend>Can we text them about earlier openings?</legend>
+            <p class="hint" id="cl-consent-hint">Required. Only people who said yes are suggested or texted. The answer goes with the mobile number.</p>
+            <p class="hint" id="cl-consent-known" hidden></p>
+            <p class="field-error" id="cl-consent-err" hidden></p>
+            <label class="radio"><input type="radio" name="textingConsent" value="opted_in" /><span>Yes <span class="hint">Opted in to texts</span></span></label>
+            <label class="radio"><input type="radio" name="textingConsent" value="opted_out" /><span>No <span class="hint">Opted out — don't text</span></span></label>
+            <label class="radio"><input type="radio" name="textingConsent" value="not_asked" /><span>Didn't ask <span class="hint">Not asked yet — don't text until you record a yes</span></span></label>
+          </fieldset>
+        </div>
+        <div class="drawer-foot">
+          <button type="submit" class="btn btn-primary" id="add-client-submit">Add to waitlist</button>
+          <button type="button" class="btn btn-quiet" data-close-dialog>Close without saving</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="consent-dialog" class="confirm-dialog" aria-labelledby="consent-h" aria-describedby="consent-body consent-note">
+      <form id="consent-form" novalidate>
+        <h2 id="consent-h">Record texting answer</h2>
+        <p id="consent-body">Can we text them about earlier openings?</p>
+        <p class="meta" id="consent-note" hidden></p>
+        <fieldset class="form-fieldset choice-group" id="consent-group" aria-describedby="consent-group-err">
+          <legend class="sr-only">Their answer</legend>
+          <p class="field-error" id="consent-group-err" hidden></p>
+          <label class="radio"><input type="radio" name="answer" value="opted_in" /><span>Yes, opted in <span class="hint">Can be suggested and texted</span></span></label>
+          <label class="radio"><input type="radio" name="answer" value="opted_out" /><span>No, opted out <span class="hint">Won't be suggested or texted</span></span></label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" id="consent-safe">Go back</button>
+          <button type="submit" class="btn btn-primary" id="consent-ok">Save answer</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-h" aria-describedby="confirm-body">
       <form method="dialog">
         <h2 id="confirm-h"></h2>
@@ -219,7 +332,7 @@
           <label for="confirm-reason">Reason (optional)</label>
           <input id="confirm-reason" maxlength="200" />
         </div>
-        <p class="meta">Any texts are simulated.</p>
+        <p class="meta" id="confirm-meta">Any texts are simulated.</p>
         <div class="dialog-actions">
           <button type="button" class="btn btn-secondary" id="confirm-safe">Go back</button>
           <button type="submit" value="ok" class="btn btn-primary" id="confirm-ok">Confirm</button>

@@ -1,11 +1,36 @@
 // Shared data types for the Juniper Salon waitlist-refill prototype.
 // Everything here is plain data so it can cross Workflow / Activity / API boundaries.
 
-export const SERVICES = ["Haircut", "Color", "Highlights", "Blowout", "Trim"] as const;
+/** Lena: "Main services: Haircut, Color, Blowout." */
+export const SERVICES = ["Haircut", "Color", "Blowout"] as const;
 export type Service = (typeof SERVICES)[number];
 
-export const STYLISTS = ["Lena", "Carla", "Sam"] as const;
+/** Default appointment length per service (filled in on the Add-opening form; staff can change it). */
+export const SERVICE_DEFAULT_DURATION_MINUTES: Record<Service, number> = { Haircut: 45, Color: 120, Blowout: 45 };
+/** Lena: appointments are "about 30 minutes to 3 hours" depending on the service. */
+export const DURATION_LIMITS_MINUTES = { min: 30, max: 180 } as const;
+
+/**
+ * Five stylists. Only Lena and Carla are named so far; the other three are SAMPLE names
+ * (chosen not to clash with any sample client) — confirm with Lena.
+ */
+export const STYLISTS = ["Lena", "Carla", "Sam", "Jules", "Nico"] as const;
 export type Stylist = (typeof STYLISTS)[number];
+export const SAMPLE_STYLISTS: readonly Stylist[] = ["Sam", "Jules", "Nico"];
+export const SAMPLE_STYLIST_NOTE = "Sample names — confirm with Lena";
+
+/**
+ * Texting consent, asked when someone joins the waitlist (Lena: "We should ask them when they
+ * join and record whether they've opted in. Some people have already opted out.").
+ * ONLY "opted_in" clients are ever suggested or texted.
+ */
+export const TEXTING_CONSENTS = ["opted_in", "opted_out", "not_asked"] as const;
+export type TextingConsent = (typeof TEXTING_CONSENTS)[number];
+export const CONSENT_LABELS: Record<TextingConsent, string> = {
+  opted_in: "Opted in to texts",
+  opted_out: "Opted out — don't text",
+  not_asked: "Not asked yet — don't text",
+};
 
 export const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 export type Day = (typeof DAYS)[number];
@@ -36,9 +61,17 @@ export type WaitlistClient = {
   availabilityTags: AvailabilityTags;
   /** ISO timestamp — earliest joiner is offered first. */
   joinedAt: string;
-  status: "waiting" | "booked";
-  /** Client asked not to be texted: never suggested, never offered (shown as opted out). */
-  optedOut?: boolean;
+  /** "removed" = they asked to come off the list (kept for history, never suggested or texted). */
+  status: "waiting" | "booked" | "removed";
+  /** Only "opted_in" clients are suggested or texted. */
+  textingConsent: TextingConsent;
+  /** When the texting answer was recorded (ISO); absent for "not_asked". */
+  consentRecordedAt?: string;
+  /** Where the answer came from, e.g. "Asked when they joined" or "Recorded by staff". */
+  consentSource?: string;
+  /** Set when staff removed them because they asked to come off the list. */
+  removedAt?: string;
+  removedReason?: string;
   bookedOpeningId?: string;
   bookedAt?: number;
   /**
@@ -64,6 +97,21 @@ export type ReserveResult = {
 };
 export type ReleaseInput = { openingId: string; releases: { clientId: string; ref: string }[] };
 
+/** Staff "Add to waitlist" form. joinedAt is set by the waitlist Workflow (back of the line). */
+export type AddClientInput = {
+  name: string;
+  mobile: string;
+  service: Service;
+  stylistRule: StylistRule;
+  /** Free text, stored and shown verbatim. */
+  availabilityNote: string;
+  /** Required: "Can we text them about earlier openings?" Yes / No / Didn't ask. */
+  textingConsent: TextingConsent;
+};
+export type RemoveClientInput = { clientId: string; reason?: string };
+export type RecordConsentInput = { clientId: string; textingConsent: TextingConsent };
+export type WaitlistActionResult = { ok: boolean; message: string; client: WaitlistClient };
+
 /** What staff typed when creating an opening. */
 export type OpeningInput = {
   openingId: string;
@@ -76,6 +124,8 @@ export type OpeningInput = {
   durationMinutes: number;
   batchSize: number;
   replyWindowSeconds: number;
+  /** Stop offering this many minutes before the start (30/45/60/90/120; default 60). */
+  stopOfferingMinutesBefore?: number;
   fastDemo: boolean;
   simulateTextFailure: boolean;
   createdBy?: string;
@@ -93,6 +143,8 @@ export type Suggestion = {
   checkNote: boolean;
   /** ANY-stylist client whose preferred stylist is this opening's stylist. */
   prefersThisStylist: boolean;
+  /** Keep trying: already texted for this opening with no reply, so listed after people never texted. */
+  textedBefore?: boolean;
 };
 
 export type OfferStatus =
@@ -121,6 +173,10 @@ export type Offer = {
   deliveredAt?: number;
   /** Exact wording of the SIMULATED offer text (nothing is really sent). */
   smsText?: string;
+  /** The reply window this offer actually got (shortened when capped by the start-time cutoff). */
+  replyWindowSeconds?: number;
+  /** True when the reply window was shortened so the deadline doesn't pass the cutoff. */
+  windowCapped?: boolean;
   sentAt?: number;
   deadline?: number;
   respondedAt?: number;
@@ -145,6 +201,30 @@ export type OpeningStatus =
 
 export type HistoryEntry = { at: number; kind: string; text: string };
 
+/** Result of the textingWindow Activity (salon local time is only ever read inside the Activity). */
+export type TextingWindow = {
+  /** Salon-local wall clock at `nowMs`, "YYYY-MM-DDTHH:mm". */
+  nowLocal: string;
+  /** The opening's date is today (salon time). */
+  sameDay: boolean;
+  /** Inside TEXTING_HOURS right now. */
+  withinHours: boolean;
+  /** Offer texts may go out now. */
+  canSendNow: boolean;
+  /** Why texting hours don't apply. */
+  bypass: "same_day" | "fast_demo" | null;
+  /** When !canSendNow: the next texting-hours start (epoch ms) and how to say it ("9:00 AM", "9:00 AM tomorrow"). */
+  nextAllowedAt?: number;
+  nextAllowedLabel?: string;
+  /** The opening's cutoff (start − stop-offering minutes) as salon-local "8:30 AM", when one was given. */
+  cutoffLabel?: string;
+  /**
+   * When texting hours are what allow the send (not bypassed): today's texting-hours end (epoch ms).
+   * A round's texts must be out by then, or they wait for the next texting-hours start.
+   */
+  hoursEndAt?: number;
+};
+
 export type OpeningState = {
   opening: OpeningInput;
   status: OpeningStatus;
@@ -154,7 +234,24 @@ export type OpeningState = {
   /** Approved client ids not yet offered, earliest joiner first. */
   queue: string[];
   offers: Offer[];
-  currentRound: { number: number; offerIds: string[]; sentAt?: number; deadline?: number } | null;
+  currentRound: {
+    number: number;
+    offerIds: string[];
+    sentAt?: number;
+    deadline?: number;
+    /** Actual reply window for this round (may be shorter than the opening's setting). */
+    replyWindowSeconds?: number;
+    windowCapped?: boolean;
+  } | null;
+  /**
+   * Set while a round is waiting for texting hours (cleared when it sends, or on cancel / fill).
+   * text: "Scheduled — texts go out at 9:00 AM (outside texting hours)".
+   */
+  scheduled: { until: number; untilLabel: string; text: string } | null;
+  /** The latest texting-hours check (shows "Same-day opening — texting hours don't apply" etc.). */
+  textingCheck: (TextingWindow & { at: number }) | null;
+  /** Outreach stops at this time (start − stopOfferingMinutesBefore); undefined when the start time is unknown. */
+  offeringCutoffAt?: number;
   roundsSent: number;
   declinedClientIds: string[];
   /** The client whose yes HOLDS the slot (status "filled"); staff confirm it and update Square. */
@@ -171,8 +268,8 @@ export type OpeningState = {
   bookingRecorded: MarkBookedResult | null;
   square: { required: boolean; done: boolean; doneAt?: number };
   unfilledReason?: string;
-  /** Why it is unfilled: nobody matched, everyone approved was tried, or the start time passed. */
-  unfilledKind?: "no_matches" | "exhausted" | "time_passed";
+  /** Why it is unfilled: nobody matched, everyone approved was tried, too close to the start, or the start time passed. */
+  unfilledKind?: "no_matches" | "exhausted" | "too_close" | "time_passed";
   cancelReason?: string;
   closedAt?: number;
   history: HistoryEntry[];

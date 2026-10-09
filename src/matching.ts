@@ -12,6 +12,7 @@ import {
   type WaitlistClient,
   type Service,
 } from "./types";
+import { mobileDigits } from "./waitlistInput";
 
 const WEEKDAYS: Day[] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const WEEKEND: Day[] = ["Sat", "Sun"];
@@ -158,6 +159,33 @@ export function availabilityFit(tags: AvailabilityTags, day: Day, part: PartOfDa
   return "fits";
 }
 
+/** Only clients still waiting who have OPTED IN to texts may be suggested or texted. */
+export function canBeOffered(c: Pick<WaitlistClient, "status" | "textingConsent">): boolean {
+  return c.status === "waiting" && c.textingConsent === "opted_in";
+}
+
+/**
+ * Texting consent belongs to the phone NUMBER: if any entry with this number opted out, the number
+ * is never texted, whichever entry an opening is about. Returns the normalised numbers that opted out.
+ */
+export function optedOutNumbers(clients: Pick<WaitlistClient, "mobile" | "textingConsent">[]): Set<string> {
+  return new Set(clients.filter((c) => c.textingConsent === "opted_out").map((c) => mobileDigits(c.mobile)));
+}
+
+/**
+ * Why this client can't be texted right now (undefined = they can). Used just before any client text
+ * (offers and follow-up notices), so an opt-out recorded mid-offer stops every later text.
+ */
+export function notTextableReason(clients: WaitlistClient[], clientId: string): string | undefined {
+  const c = clients.find((x) => x.id === clientId);
+  if (!c) return "no longer on the waitlist";
+  if (c.status === "removed") return "removed from the waitlist (asked to come off)";
+  if (c.textingConsent === "opted_out") return "opted out of texts";
+  if (c.textingConsent !== "opted_in") return "hasn't been asked about texts yet";
+  if (optedOutNumbers(clients).has(mobileDigits(c.mobile))) return "opted out of texts (on another waitlist entry with the same number)";
+  return undefined;
+}
+
 export function stylistRuleSatisfied(rule: StylistRule, stylist: Stylist): boolean {
   return rule.kind === "any" || rule.stylist === stylist;
 }
@@ -178,26 +206,29 @@ export type MatchOpening = { service: Service; stylist: Stylist; startsAt: strin
 
 /**
  * Suggested matches for an opening: same service, stylist rule satisfied,
- * availability roughly fits (or the note needs a human read), still waiting,
- * not opted out, not excluded and not holding a live offer elsewhere — earliest joiner first.
+ * availability roughly fits (or the note needs a human read), still waiting (not booked or removed),
+ * opted in to texts, not excluded and not holding a live offer elsewhere — earliest joiner first.
  */
 export function computeSuggestions(
   clients: WaitlistClient[],
   opening: MatchOpening,
-  options: { excludeClientIds?: Iterable<string>; busyClientIds?: Iterable<string> } = {},
+  options: { excludeClientIds?: Iterable<string>; busyClientIds?: Iterable<string>; textedBeforeIds?: Iterable<string> } = {},
 ): Suggestion[] {
   const exclude = new Set(options.excludeClientIds ?? []);
   const busy = new Set(options.busyClientIds ?? []);
+  const textedBefore = new Set(options.textedBeforeIds ?? []);
+  const blockedNumbers = optedOutNumbers(clients);
   const { day, part } = describeSlot(opening.startsAt);
   return clients
-    .filter((c) => c.status === "waiting")
-    .filter((c) => !c.optedOut) // opted out of texts => never contacted
+    .filter(canBeOffered) // waiting + opted in; opted out / not asked / removed => never contacted
+    .filter((c) => !blockedNumbers.has(mobileDigits(c.mobile))) // the same number opted out on another entry
     .filter((c) => !exclude.has(c.id) && !busy.has(c.id))
     .filter((c) => c.service === opening.service)
     .filter((c) => stylistRuleSatisfied(c.stylistRule, opening.stylist))
     .map((c) => ({ c, fit: availabilityFit(c.availabilityTags, day, part) }))
     .filter(({ fit }) => fit !== "no")
-    .sort((x, y) => byJoinOrder(x.c, y.c))
+    // Keep trying: people never texted for this opening first; already texted with no reply go to the end.
+    .sort((x, y) => Number(textedBefore.has(x.c.id)) - Number(textedBefore.has(y.c.id)) || byJoinOrder(x.c, y.c))
     .map(({ c, fit }) => ({
       clientId: c.id,
       name: c.name,
@@ -208,5 +239,6 @@ export function computeSuggestions(
       stylistRule: c.stylistRule,
       checkNote: fit === "check-note",
       prefersThisStylist: c.stylistRule.kind === "any" && c.stylistRule.preferred === opening.stylist,
+      ...(textedBefore.has(c.id) ? { textedBefore: true } : {}),
     }));
 }

@@ -17,3 +17,17 @@ export function formatWindowSeconds(seconds: number): string {
   if (min >= 60 && min % 60 === 0) return `${min / 60} hour${min === 60 ? "" : "s"}`;
   return `${min} min`;
 }
+
+/** "Lena", "Lena and Carla", "Lena, Carla and Sam". */
+export function listNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** "45 min", "1 hour", "1 hour 30 min", "2 hours" (for settings like Stop offering). */
+export function minutesText(min: number): string {
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const r = min % 60;
+  return `${h} hour${h === 1 ? "" : "s"}${r ? ` ${r} min` : ""}`;
+}

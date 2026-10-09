@@ -18,6 +18,8 @@ const ICONS = {
   message: svg('<path d="M4 5h16v11H9l-5 4z"/><path d="M3 3l18 18"/>'),
   dot: svg('<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>'),
   pencil: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>'),
+  question: svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17v.01"/>'),
+  phone: svg('<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 17.5h2"/>'),
   chevron: svg('<path d="m6 9 6 6 6-6"/>').replace('class="icon"', 'class="icon chev"'),
 };
 const ext = '<span aria-hidden="true"> ↗</span>';
@@ -70,6 +72,24 @@ function wallTime(utc) {
   const mi = dt.getUTCMinutes();
   if (h === 12 && mi === 0) return "noon";
   return `${h % 12 || 12}:${pad(mi)}\u00a0${h < 12 ? "AM" : "PM"}`; // never split "12:30 PM" across lines
+}
+/**
+ * An epoch time on the SALON's wall clock (not this device's): the opening's start is stored both as
+ * wall time and as epoch ms, which gives the salon's UTC offset. Falls back to the device clock.
+ */
+function salonClock(s, ms) {
+  const p = parseSlot(s?.opening?.startsAt);
+  if (!p || s.opening.startsAtMs == null || ms == null) return formatClock(ms);
+  return wallTime(ms + (p.utc - s.opening.startsAtMs));
+}
+/** "at 1:00 PM" today, otherwise "on Sat, Oct 17 at 9:00 AM": when offers stop (start − Stop offering). */
+function cutoffAt(s) {
+  const p = parseSlot(s?.opening?.startsAt);
+  if (!p) return s?.offeringCutoffAt ? `at ${salonClock(s, s.offeringCutoffAt)}` : "";
+  const wall = p.utc - (s.opening.stopOfferingMinutesBefore ?? meta?.defaultStopOfferingMinutes ?? 60) * 60_000;
+  const d = new Date(wall);
+  const time = wallTime(wall);
+  return d.toISOString().slice(0, 10) === meta?.today ? `at ${time}` : `on ${DAY[d.getUTCDay()]}, ${MONTH[d.getUTCMonth()]} ${d.getUTCDate()} at ${time}`;
 }
 function relativeDay(startsAt, today) {
   if (!today || !startsAt) return "";
@@ -169,7 +189,11 @@ async function api(path, options = {}) {
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(body.error || `Request failed (${response.status})`);
+    error.body = body;
+    throw error;
+  }
   return body;
 }
 
@@ -214,20 +238,31 @@ let dialogOpener = null;
 let skipReturnFocus = false;
 let creating = false;
 
-function settingsSummaryText(batch, choice) {
-  const win = choice === "auto" ? "reply window set automatically" : choice === "fast" ? "fast demo reply window" : `${windowText(Number(choice) * 60)} to reply`;
-  return `Offer settings: up to ${batch} per round · ${win}`;
+/** "1 hour", "1 hour 30 min", "45 min" for the Stop offering setting. */
+function minutesText(min) {
+  const m = Number(min);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return `${h} hour${h === 1 ? "" : "s"}${r ? ` ${r} min` : ""}`;
 }
+function settingsSummaryText(batch, choice, stop) {
+  const win = choice === "auto" ? "auto reply window" : choice === "fast" ? "fast demo reply window" : `${windowText(Number(choice) * 60)} to reply`;
+  return `Offer settings: up to ${batch} per round · ${win} · stop ${minutesText(stop)} before`;
+}
+const replyDefaults = () => meta?.replyWindowDefaults ?? { sameDayMinutes: 15, laterMinutes: 120 };
 function updateWindowHint() {
   const form = $("#opening-form");
   const choice = form.replyWindow.value;
   const isToday = form.date.value === meta?.today;
+  const d = replyDefaults();
   let text;
-  if (choice === "auto") text = `Clients get ${isToday ? "15 minutes (opening is today)" : "60 minutes (opening is later)"} to reply, counted from when the texts go out.`;
-  else if (choice === "fast") text = "Fast demo: a clearly-labelled 30-second reply window so you can watch rounds advance.";
+  if (choice === "auto") {
+    text = `Clients get ${isToday ? `${minutesText(d.sameDayMinutes)} (opening is today)` : `${minutesText(d.laterMinutes)} (opening is later)`} to reply, counted from when the texts go out.`;
+  } else if (choice === "fast") text = "Fast demo: a clearly labelled 30-second reply window so you can watch rounds advance. Fast demo ignores texting hours.";
   else text = `Clients get ${windowText(Number(choice) * 60)} to reply, counted from when the texts go out.`;
-  $("#window-hint").textContent = text;
-  $("#offer-settings-summary").textContent = settingsSummaryText(form.batchSize.value, choice);
+  $("#window-hint").textContent = `${text} Shortened if needed so replies close before the “Stop offering” time.`;
+  $("#offer-settings-summary").textContent = settingsSummaryText(form.batchSize.value, choice, form.stopOfferingMinutesBefore.value);
 }
 
 function openOpeningDialog(trigger) {
@@ -241,7 +276,7 @@ openingDialog.addEventListener("close", () => {
   if (skipReturnFocus) return;
   (dialogOpener?.isConnected ? dialogOpener : $("#add-opening-btn")).focus();
 });
-document.querySelectorAll("[data-close-dialog]").forEach((b) => b.addEventListener("click", () => openingDialog.close()));
+document.querySelectorAll("[data-close-dialog]").forEach((b) => b.addEventListener("click", () => b.closest("dialog")?.close()));
 
 const FIELD_IDS = ["f-service", "f-stylist", "f-date", "f-time", "f-duration"];
 function setFieldError(id, message) {
@@ -264,8 +299,20 @@ function validate(form) {
   if (!form.date.value) errors.push(["f-date", "Enter a date"]);
   else if (meta?.today && form.date.value < meta.today) errors.push(["f-date", "Choose a date today or later"]);
   if (!form.time.value) errors.push(["f-time", "Enter a time"]);
+  else if (form.date.value) {
+    // Same rule as the workflow: outreach stops "Stop offering" minutes before the start.
+    const [y, mo, dd] = form.date.value.split("-").map(Number);
+    const [h, mi] = form.time.value.split(":").map(Number);
+    const startMs = new Date(y, mo - 1, dd, h, mi).getTime();
+    const stop = Number(form.stopOfferingMinutesBefore.value);
+    if (startMs <= now()) errors.push(["f-time", "That time has already passed"]);
+    else if (startMs - stop * 60_000 <= now()) {
+      errors.push(["f-time", `Too close to the start time to offer it. Offers stop ${minutesText(stop)} before it starts: choose a later time or a shorter “Stop offering” time`]);
+    }
+  }
   const d = Number(form.durationMinutes.value);
-  if (!form.durationMinutes.value || !Number.isInteger(d) || d < 15 || d > 480) errors.push(["f-duration", "Length must be between 15 and 480 minutes"]);
+  const { min, max } = meta?.durationLimits ?? { min: 30, max: 180 };
+  if (!form.durationMinutes.value || !Number.isInteger(d) || d < min || d > max) errors.push(["f-duration", `Length must be between ${min} and ${max} minutes`]);
   return errors;
 }
 function showErrors(errors, serverMessage) {
@@ -294,18 +341,53 @@ $("#error-list").addEventListener("click", (event) => {
 
 async function setupForm() {
   meta = await api("/api/meta");
+  const sample = new Set(meta.sampleStylists ?? []);
+  const stylistOption = (s, value = s) => `<option value="${esc(value)}">${esc(s)}${sample.has(s) ? " (sample name)" : ""}</option>`;
+  const stylistOptions = meta.stylists.map((s) => stylistOption(s)).join("");
   $("#f-service").innerHTML = meta.services.map((s) => `<option>${esc(s)}</option>`).join("");
-  $("#f-stylist").innerHTML = meta.stylists.map((s) => `<option>${esc(s)}</option>`).join("");
-  $("#wl-stylist").innerHTML = `<option value="">Any</option>${meta.stylists.map((s) => `<option>${esc(s)}</option>`).join("")}`;
+  $("#f-stylist").innerHTML = stylistOptions;
+  $("#wl-stylist").innerHTML = `<option value="">Any</option>${stylistOptions}`;
   $("#wl-service").innerHTML = `<option value="">Any</option>${meta.services.map((s) => `<option>${esc(s)}</option>`).join("")}`;
-  $("#f-date").value = meta.today;
+  $("#cl-service").innerHTML = meta.services.map((s) => `<option>${esc(s)}</option>`).join("");
+  $("#cl-preferred").innerHTML = `<option value="">No preference</option>${stylistOptions}`;
+  $("#cl-only").innerHTML = stylistOptions;
+  if (sample.size) {
+    const names = [...sample];
+    const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+    $("#f-stylist-hint").textContent = `${list} are sample names. Confirm with Lena.`;
+    $("#wl-sample-stylists").textContent = `${list} are sample stylist names (confirm with Lena).`;
+  } else {
+    $("#f-stylist-hint").hidden = true;
+    $("#wl-sample-stylists").hidden = true;
+  }
+  if (meta.stopOfferingOptions?.length) {
+    $("#f-stop").innerHTML = meta.stopOfferingOptions
+      .map((m) => `<option value="${m}" ${m === meta.defaultStopOfferingMinutes ? "selected" : ""}>${esc(minutesText(m))}</option>`)
+      .join("");
+  }
+  if (meta.textingHours?.label) {
+    $("#texting-hours-text").textContent = `Offer texts go out ${meta.textingHours.label} salon time (Lena: “sounds about right”). Same-day openings can be texted any time. Fast demo ignores texting hours.`;
+  }
+  const lim = meta.durationLimits ?? { min: 30, max: 180 };
+  $("#f-duration").min = lim.min;
+  $("#f-duration").max = lim.max;
+  $("#f-duration-hint").textContent = `In minutes, ${lim.min} to ${lim.max}. Filled in from the service; change it if needed.`;
+  const fillDuration = () => {
+    const d = meta.serviceDurations?.[$("#f-service").value];
+    if (d) $("#f-duration").value = d;
+  };
+  fillDuration();
+  // Default start: about 2¼ hours from now, so it's clear of the default 1-hour "Stop offering" cutoff.
+  const t = new Date(now());
+  t.setMinutes(Math.ceil((t.getMinutes() + 135) / 15) * 15, 0, 0);
+  const tDate = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+  $("#f-date").value = tDate < meta.today ? meta.today : tDate;
   $("#f-date").min = meta.today;
-  const t = new Date();
-  t.setMinutes(Math.ceil((t.getMinutes() + 31) / 15) * 15, 0, 0);
   $("#f-time").value = `${pad(t.getHours())}:${pad(t.getMinutes())}`;
   $("#temporal-ui").href = `${meta.temporalUi}/namespaces/default/workflows`;
   updateWindowHint();
   const form = $("#opening-form");
+  $("#f-service").addEventListener("change", fillDuration);
   form.addEventListener("change", updateWindowHint);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -321,6 +403,7 @@ async function setupForm() {
       startsAt: `${fd.get("date")}T${fd.get("time")}`,
       durationMinutes: Number(fd.get("durationMinutes")),
       batchSize: Number(fd.get("batchSize")),
+      stopOfferingMinutesBefore: Number(fd.get("stopOfferingMinutesBefore")),
       fastDemo: choice === "fast",
       replyWindowMinutes: choice === "auto" || choice === "fast" ? null : Number(choice),
       simulateTextFailure: fd.get("simulateTextFailure") === "on",
@@ -372,10 +455,11 @@ function settleConfirm(ok) {
   if (confirmDialog.open) confirmDialog.close(ok ? "ok" : "cancel");
   resolve?.({ ok, reason });
 }
-function openConfirm({ title, body, actionLabel, safeLabel, variant, withReason }) {
+function openConfirm({ title, body, actionLabel, safeLabel, variant, withReason, metaLine = "Any texts are simulated." }) {
   confirmTrigger = { el: document.activeElement, card: document.activeElement?.closest?.("article.opening")?.id };
   $("#confirm-h").textContent = title;
   $("#confirm-body").textContent = body;
+  $("#confirm-meta").textContent = metaLine;
   $("#confirm-reason-field").hidden = !withReason;
   $("#confirm-reason").value = "";
   $("#confirm-ok").textContent = actionLabel;
@@ -407,6 +491,270 @@ confirmDialog.addEventListener("close", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Add to waitlist drawer (same pattern as Add opening)
+// ---------------------------------------------------------------------------
+const clientDialog = $("#client-dialog");
+const clientForm = $("#client-form");
+let clientOpener = null;
+let addingClient = false;
+let skipClientReturn = false;
+const CL_FIELDS = { name: "cl-name", mobile: "cl-mobile", service: "cl-service", stylistRule: "cl-rule", availabilityNote: "cl-note", textingConsent: "cl-consent" };
+/** Where an error link should land: the input itself, or the first option of a radio group. */
+const focusTargetFor = (id) => {
+  const el = document.getElementById(id);
+  return el?.tagName === "FIELDSET" ? el.querySelector("input:checked") ?? el.querySelector("input") : el;
+};
+
+function setGroupError(id, message) {
+  const el = document.getElementById(id);
+  const err = document.getElementById(`${id}-err`);
+  if (!el || !err) return;
+  if (el.tagName === "FIELDSET") el.classList.toggle("is-invalid", Boolean(message));
+  else if (message) el.setAttribute("aria-invalid", "true");
+  else el.removeAttribute("aria-invalid");
+  if (message) {
+    err.innerHTML = `${ICONS.alert}<span><span class="sr-only">Error:</span> ${esc(message)}</span>`;
+    err.hidden = false;
+  } else {
+    err.textContent = "";
+    err.hidden = true;
+  }
+}
+function syncRuleFields() {
+  const only = clientForm.ruleKind.value === "required";
+  $("#cl-only-field").hidden = !only;
+  $("#cl-preferred-field").hidden = only;
+}
+const digitsOf = (m) => {
+  const d = String(m ?? "").replace(/\D/g, "");
+  return d.length === 11 && d.startsWith("1") ? d.slice(1) : d;
+};
+/** Texting consent goes with the mobile number: show the answer already on file for it. */
+function updateKnownConsent() {
+  const d = digitsOf(clientForm.mobile.value);
+  const el = $("#cl-consent-known");
+  const match = d.length >= 10 ? (lastData?.waitlist?.clients ?? []).filter((c) => digitsOf(c.mobile) === d && consentOf(c) !== "not_asked") : [];
+  const latest = match.sort((a, b) => ((a.consentRecordedAt ?? "") < (b.consentRecordedAt ?? "") ? 1 : -1))[0];
+  el.hidden = !latest;
+  el.textContent = latest
+    ? `This number is already on the waitlist (${latest.name}): ${CONSENT[consentOf(latest)][1]}. Yes or No here updates every entry with this number; Didn't ask keeps that answer.`
+    : "";
+}
+function resetClientForm() {
+  clientForm.reset();
+  syncRuleFields();
+  showClientErrors([]);
+  updateKnownConsent();
+}
+function openClientDialog(trigger) {
+  clientOpener = trigger ?? $("#add-client-btn");
+  if (!clientDialog.open) clientDialog.showModal();
+  $("#cl-name").focus();
+}
+clientDialog.addEventListener("close", () => {
+  titleError = false;
+  setTitle();
+  if (skipClientReturn) return;
+  (clientOpener?.isConnected ? clientOpener : $("#add-client-btn")).focus();
+});
+clientForm.addEventListener("change", (event) => {
+  if (event.target.name === "ruleKind") syncRuleFields();
+});
+clientForm.mobile.addEventListener("input", updateKnownConsent);
+
+function validateClient(form) {
+  const errors = [];
+  if (!form.name.value.trim()) errors.push(["cl-name", "Enter their name"]);
+  const digits = form.mobile.value.replace(/\D/g, "");
+  if (!form.mobile.value.trim()) errors.push(["cl-mobile", "Enter their mobile number"]);
+  else if (digits.length < 10 || digits.length > 15) errors.push(["cl-mobile", "Enter a valid mobile number, like (555) 010-0150"]);
+  if (!form.service.value) errors.push(["cl-service", "Choose a service"]);
+  if (form.ruleKind.value === "required" && !form.only.value) errors.push(["cl-rule", "Choose which stylist they need"]);
+  if (!form.textingConsent.value) errors.push(["cl-consent", "Answer “Can we text them about earlier openings?”: Yes, No or Didn't ask"]);
+  return errors;
+}
+function showClientErrors(errors, serverMessage) {
+  Object.values(CL_FIELDS).forEach((id) => setGroupError(id, null));
+  errors.forEach(([id, msg]) => setGroupError(id, msg));
+  const box = $("#cl-error-summary");
+  const items = errors.map(([id, msg]) => `<li><a href="#${id}" data-focus-field="${id}">${esc(msg)}</a></li>`);
+  if (serverMessage) items.push(`<li>Could not add them: ${esc(serverMessage)}</li>`);
+  titleError = items.length > 0;
+  setTitle();
+  if (!items.length) {
+    box.hidden = true;
+    $("#cl-error-list").innerHTML = "";
+    return;
+  }
+  $("#cl-error-list").innerHTML = items.join("");
+  box.hidden = false;
+  box.focus();
+}
+$("#cl-error-list").addEventListener("click", (event) => {
+  const a = event.target.closest("a[data-focus-field]");
+  if (!a) return;
+  event.preventDefault();
+  focusTargetFor(a.dataset.focusField)?.focus();
+});
+clientForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (addingClient) return;
+  const errors = validateClient(clientForm);
+  if (errors.length) return showClientErrors(errors);
+  showClientErrors([]);
+  const f = clientForm;
+  const body = {
+    name: f.name.value.trim(),
+    mobile: f.mobile.value.trim(),
+    service: f.service.value,
+    stylistRule: f.ruleKind.value === "required" ? { kind: "required", stylist: f.only.value } : { kind: "any", ...(f.preferred.value ? { preferred: f.preferred.value } : {}) },
+    availabilityNote: f.availabilityNote.value,
+    textingConsent: f.textingConsent.value,
+  };
+  const btn = $("#add-client-submit");
+  addingClient = true;
+  btn.setAttribute("aria-busy", "true");
+  btn.textContent = "Adding…";
+  try {
+    const result = await api("/api/waitlist", { method: "POST", body });
+    skipClientReturn = true;
+    clientDialog.close();
+    skipClientReturn = false;
+    resetClientForm();
+    toast(result.message || `${result.client?.name ?? body.name} added to the back of the waitlist.`);
+    wlFilter = "waiting";
+    setView("waitlist");
+    await refresh();
+    const row = result.client?.id && document.getElementById(`client-${result.client.id}`);
+    if (row && !row.closest("[hidden]")) row.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "nearest" });
+    $("#add-client-btn").focus({ preventScroll: true });
+  } catch (error) {
+    const fieldErrors = (error.body?.fieldErrors ?? []).filter((e) => CL_FIELDS[e.field]).map((e) => [CL_FIELDS[e.field], e.message]);
+    showClientErrors(fieldErrors, fieldErrors.length ? "" : error.message);
+  } finally {
+    addingClient = false;
+    btn.removeAttribute("aria-busy");
+    btn.textContent = "Add to waitlist";
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Record texting answer (small dialog: Opted in / Opted out, then Save)
+// ---------------------------------------------------------------------------
+const consentDialog = $("#consent-dialog");
+const consentForm = $("#consent-form");
+let consentClient = null;
+let consentTrigger = null;
+let savingConsent = false;
+const findClient = (id) => lastData?.waitlist?.clients?.find((c) => c.id === id);
+
+function openConsentDialog(clientId, trigger) {
+  const c = findClient(clientId);
+  if (!c) return;
+  consentClient = c;
+  consentTrigger = { el: trigger, id: clientId };
+  consentForm.reset();
+  setGroupError("consent-group", null);
+  $("#consent-h").textContent = `Record texting answer for ${c.name}`;
+  $("#consent-body").textContent =
+    `Can we text ${firstName(c.name)} about earlier openings? Right now: ${CONSENT[consentOf(c)][1]}. Only record what they told you.`;
+  const notes = [];
+  if (consentOf(c) === "opted_out") notes.push("They asked not to be texted. Only change this if they asked to get texts again.");
+  if (c.holding && !c.holding.held) notes.push("They have an offer out now. If you record No, they won't get any more texts about it.");
+  const sharing = (lastData?.waitlist?.clients ?? []).filter((x) => x.id !== c.id && digitsOf(x.mobile) === digitsOf(c.mobile)).length;
+  if (sharing) notes.push(`The answer applies to this mobile number, so ${sharing} other waitlist ${sharing === 1 ? "entry" : "entries"} with it will change too.`);
+  $("#consent-note").textContent = notes.join(" ");
+  $("#consent-note").hidden = !notes.length;
+  const current = consentForm.querySelector(`input[value="${consentOf(c)}"]`);
+  if (current) current.checked = true;
+  consentDialog.showModal();
+  (consentForm.querySelector("input:checked") ?? consentForm.querySelector("input")).focus();
+}
+$("#consent-safe").addEventListener("click", () => consentDialog.close());
+consentDialog.addEventListener("close", () => {
+  const t = consentTrigger;
+  consentTrigger = null;
+  if (t?.el?.isConnected) return t.el.focus();
+  const id = CSS.escape(t?.id ?? "");
+  // The row re-rendered (the answer changed): land on the same row's controls, else the panel's button.
+  (document.querySelector(`[data-action="wl-consent"][data-id="${id}"]`) ??
+    document.querySelector(`[data-action="wl-manage"][data-id="${id}"]`) ??
+    $("#add-client-btn")).focus();
+});
+consentForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (savingConsent || !consentClient) return;
+  const answer = consentForm.answer.value;
+  if (answer !== "opted_in" && answer !== "opted_out") {
+    setGroupError("consent-group", "Choose Yes, opted in or No, opted out");
+    consentForm.querySelector("input").focus();
+    return;
+  }
+  const btn = $("#consent-ok");
+  savingConsent = true;
+  btn.setAttribute("aria-busy", "true");
+  btn.textContent = "Saving…";
+  busy = true;
+  try {
+    const result = await api(`/api/waitlist/${encodeURIComponent(consentClient.id)}/consent`, { method: "POST", body: { textingConsent: answer } });
+    consentDialog.close();
+    toast(
+      result.message ||
+        `${consentClient.name}: ${answer === "opted_in" ? "opted in. They can now be suggested and texted." : "opted out. They won't be suggested or texted."}`,
+    );
+  } catch (error) {
+    setGroupError("consent-group", error.message);
+  } finally {
+    savingConsent = false;
+    busy = false;
+    btn.removeAttribute("aria-busy");
+    btn.textContent = "Save answer";
+    const id = consentClient?.id;
+    await refresh();
+    // The row's "Record texting answer" button goes away once they've answered: keep focus on that row.
+    if (!consentDialog.open && (!document.activeElement || document.activeElement === document.body) && id) {
+      (document.querySelector(`[data-action="wl-manage"][data-id="${CSS.escape(id)}"]`) ?? $("#add-client-btn")).focus();
+    }
+  }
+});
+
+async function removeFromWaitlist(clientId, trigger) {
+  const c = findClient(clientId);
+  if (!c) return;
+  const { ok, reason } = await openConfirm({
+    title: `Remove ${c.name} from the waitlist?`,
+    body: "Only remove someone who asked to come off the list. They won't be suggested or texted again, and they stay under “All” for history. Nobody is texted about this.",
+    metaLine: "This can't be undone here: adding them again puts them at the back of the line.",
+    actionLabel: "Remove from waitlist",
+    safeLabel: "Keep them",
+    variant: "danger",
+    withReason: true,
+  });
+  if (!ok) return;
+  busy = true;
+  if (trigger?.isConnected) {
+    trigger.setAttribute("aria-busy", "true");
+    trigger.textContent = "Removing…";
+  }
+  try {
+    const result = await api(`/api/waitlist/${encodeURIComponent(clientId)}/remove`, { method: "POST", body: reason ? { reason } : {} });
+    wlManageOpen.delete(clientId);
+    toast(result.message || `${c.name} was removed from the waitlist.`);
+    busy = false;
+    await refresh();
+    $("#add-client-btn").focus();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    busy = false;
+    if (lastData) {
+      $("#waitlist")._html = null;
+      renderWaitlist(lastData);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rendering: summary row
 // ---------------------------------------------------------------------------
 /** A late yes can only be booked or dismissed while the opening's workflow is still running. */
@@ -427,13 +775,15 @@ function classify(o) {
   if (s.status === "awaiting_approval" || held || s.status === "unfilled" || lateYes) group = "needs";
   else if (s.status === "finding_matches" || s.status === "offering") group = "waiting";
   const past = group !== "finished" && !held && isPast(s);
-  return { group, key: held ? "held" : s.status, held, lateYes, past };
+  // Scheduled rounds (waiting for texting hours) have sent nothing, so they aren't "Offers out".
+  const key = held ? "held" : s.status === "offering" && s.scheduled ? "scheduled" : s.status;
+  return { group, key, held, lateYes, past };
 }
 
 const STATS = [
   ["awaiting_approval", "Needs your OK", "warn", true],
   ["held", "Held · confirm in Square", "held", true],
-  ["unfilled", "Nobody took it", "nobody", true],
+  ["unfilled", "Not filled", "nobody", true],
   ["offering", "Offers out", "info", false],
 ];
 function renderSummary(data) {
@@ -458,13 +808,14 @@ function renderSummary(data) {
     </button></li>`;
   }).join("");
   const refill = `
-      <div class="refill-top"><span class="stat-label" id="refill-h">Chairs refilled</span><span class="refill-value num">${closed ? `${r.filled} of ${closed} (${pct}%)` : "No finished openings yet"}</span></div>
+      <div class="refill-top"><span class="stat-label" id="refill-h">Last-minute chairs refilled</span><span class="refill-value num">${closed ? `${r.filled} of ${closed} (${pct}%)` : "No finished openings yet"}</span></div>
       <div class="meter" aria-hidden="true">
         <div class="meter-fill" style="width:${pct ?? 0}%"></div>
         <span class="meter-tick" style="left:${r.baseline * 100}%"></span>
         <span class="meter-tick" style="left:${r.goal * 100}%"></span>
       </div>
       <p class="stat-note">~${Math.round(r.baseline * 100)}% before · ${Math.round(r.goal * 100)}% goal</p>
+      <p class="stat-note">Counts openings that start within ${r.lastMinuteHours ?? 48} hours of being added, Lena’s “last-minute”.${r.later?.closed ? ` Openings further ahead: ${r.later.filled} of ${r.later.closed} refilled, not counted.` : ""}</p>
       <p class="stat-note">Prototype data, not proof of the business goal. Held and cancelled openings aren’t counted.</p>`;
   patch($("#summary"), items);
   patch($("#refill"), refill);
@@ -492,9 +843,12 @@ function statusChip(s) {
   switch (s.status) {
     case "finding_matches": return chip("info", "Finding matches", "dot");
     case "awaiting_approval": return chip("warn", "Needs your OK", "alert");
-    case "offering": return chip("info", "Offers out", "send");
+    case "offering": return s.scheduled ? chip("info", "Scheduled", "clock") : chip("info", "Offers out", "send");
     case "filled": return s.square.done ? chip("ok", "Booked", "check") : chip("held", "Held · confirm in Square", "clock");
-    case "unfilled": return chip("nobody", "Nobody took it", "dash");
+    case "unfilled":
+      return s.unfilledKind === "too_close" || s.unfilledKind === "time_passed"
+        ? chip("nobody", s.unfilledKind === "too_close" ? "Too close to start" : "Time passed", "dash")
+        : chip("nobody", "Nobody took it", "dash");
     case "cancelled": return chip("neutral", "Cancelled", "ban");
     case "left_open": return chip("neutral", "Left open", "dot");
     default: return chip("neutral", "Unknown", "dot");
@@ -526,7 +880,7 @@ function renderApproval(id, s) {
         <h5 class="panel-title">Approve who gets texted</h5>
         ${s.cycle > 1 ? chip("neutral", s.cycle === 2 ? "Second try" : `Try ${s.cycle}`, "dot") : ""}
       </div>
-      <p class="meta">Earliest joiner first · wants this service · stylist rule fits.</p>
+      <p class="meta">Earliest joiner first · wants this service · stylist rule fits · opted in to texts.</p>
       <p class="panel-key">Nothing is sent until you approve. <span class="panel-key-sub">Untick anyone who shouldn't get it.</span></p>
       <ul class="picks">
         ${s.suggestions
@@ -534,7 +888,7 @@ function renderApproval(id, s) {
             (m) => `<li><label class="pick">
               <input type="checkbox" data-select="${eid}" value="${esc(m.clientId)}" ${sel.has(m.clientId) ? "checked" : ""} />
               <span class="pick-body">
-                <span class="pick-top"><span class="pick-name">${esc(m.name)}</span>${m.checkNote ? chip("warn", "Check note", "alert") : ""}${m.prefersThisStylist ? chip("neutral", "Prefers this stylist", "dot") : ""}</span>
+                <span class="pick-top"><span class="pick-name">${esc(m.name)}</span>${m.checkNote ? chip("warn", "Check note", "alert") : ""}${m.prefersThisStylist ? chip("neutral", "Prefers this stylist", "dot") : ""}${m.textedBefore ? chip("neutral", "Texted before — no reply", "dot") : ""}</span>
                 <span class="pick-note">“${esc(m.availabilityNote)}”</span>
                 <span class="pick-meta">${esc(ruleText(m.stylistRule))} · joined ${esc(shortDate(m.joinedAt))}</span>
               </span>
@@ -561,8 +915,9 @@ function renderApproval(id, s) {
           </select>
         </div>
       </fieldset>
+      ${timingNote(s)}
       <div class="actions">
-        <button type="button" class="btn btn-primary btn-block-phone" data-action="approve" data-id="${eid}" aria-describedby="cnt-${eid}" ${sel.size ? "" : 'aria-disabled="true"'}>Approve &amp; text ${n} now</button>
+        <button type="button" class="btn btn-primary btn-block-phone" data-action="approve" data-id="${eid}" aria-describedby="cnt-${eid}" ${sel.size ? "" : 'aria-disabled="true"'}>Approve &amp; text ${n}</button>
         ${s.cycle > 1 ? `<button type="button" class="btn btn-secondary" data-action="leave-open" data-id="${eid}">Leave it open, don't text anyone</button>` : ""}
       </div>
       <p class="meta approve-count" id="cnt-${eid}">${approveCountText(sel.size, n)}</p>
@@ -579,7 +934,7 @@ function patchApproval(id) {
   const n = Math.min(sel.size, Number(settings.batchSize));
   const btn = card.querySelector('[data-action="approve"]');
   if (btn && !btn.hasAttribute("aria-busy")) {
-    btn.textContent = `Approve & text ${n} now`;
+    btn.textContent = `Approve & text ${n}`;
     if (sel.size) btn.removeAttribute("aria-disabled");
     else btn.setAttribute("aria-disabled", "true");
   }
@@ -601,12 +956,52 @@ const OFFER_STATUS = {
   told_cancelled: ["neutral", "Told cancelled", "dot"],
 };
 
+const hoursLabel = () => meta?.textingHours?.label ?? "9:00 AM–8:00 PM";
+/** When outreach stops ("Offers stop at 1:30 PM, 1 hour before it starts"), plus who texting hours apply to. */
+function timingNote(s) {
+  const stop = s.opening.stopOfferingMinutesBefore ?? meta?.defaultStopOfferingMinutes ?? 60;
+  const cutoff = s.offeringCutoffAt ? `Offers stop ${cutoffAt(s)}, ${minutesText(stop)} before it starts.` : "";
+  const isToday = s.opening.startsAt?.slice(0, 10) === meta?.today;
+  const hours = s.opening.fastDemo
+    ? "Fast demo ignores texting hours."
+    : isToday
+      ? "Same-day opening: texting hours don't apply."
+      : `Offer texts go out ${hoursLabel()}; outside those hours they're scheduled.`;
+  return `<p class="opening-note">${ICONS.clock}<span>${esc([cutoff, hours].filter(Boolean).join(" "))}</span></p>`;
+}
+function bypassChip(s) {
+  // The card's progress line already carries the full "Fast demo ignores texting hours" label.
+  if (s.opening.fastDemo) return chip("demo", "Fast demo", "message");
+  if (s.textingCheck?.bypass === "same_day" && !s.textingCheck.withinHours) return chip("neutral", "Same-day: sent outside texting hours", "dot");
+  return "";
+}
+
+function renderScheduled(id, s) {
+  const sc = s.scheduled;
+  // Only people who can still be texted (anyone removed or opted out since approval is skipped at send time).
+  const nextUp = s.queue
+    .filter((cid) => findClient(cid)?.textable !== false)
+    .map((cid) => s.suggestions.find((m) => m.clientId === cid)?.name ?? cid);
+  return `
+    <div class="panel panel--info">
+      <div class="panel-head"><h5 class="panel-title">${esc(sc.text)}</h5></div>
+      <p>It's outside texting hours (<span class="nw">${esc(hoursLabel())}</span>), so nothing is sent until <span class="nw">${esc(sc.untilLabel || salonClock(s, sc.until))}</span>. You can still cancel the opening.</p>
+      ${s.offeringCutoffAt ? `<p class="meta">Offers stop ${esc(cutoffAt(s))}. The reply window is shortened if needed to end by then.</p>` : ""}
+      <p class="meta">${nextUp.length ? `First to be texted: ${esc(nextUp.slice(0, s.opening.batchSize).join(", "))}` : ""}</p>
+    </div>`;
+}
+
 function renderOffering(id, s) {
+  if (s.scheduled) return renderScheduled(id, s);
   const round = s.currentRound;
   const roundOffers = round ? s.offers.filter((o) => round.offerIds.includes(o.offerId)) : [];
   const nextUp = s.queue.map((cid) => s.suggestions.find((m) => m.clientId === cid)?.name ?? cid);
   const sending = roundOffers.some((o) => o.status === "sending");
   const sent = roundOffers.find((o) => o.smsText);
+  const capped =
+    round?.windowCapped && round.replyWindowSeconds
+      ? `<p class="opening-note">${ICONS.info}<span>Reply window shortened to ${esc(windowText(round.replyWindowSeconds))} so replies close before the cutoff ${esc(cutoffAt(s))} (offers stop ${esc(minutesText(s.opening.stopOfferingMinutesBefore ?? 60))} before it starts).</span></p>`
+      : "";
   return `
     <div class="panel">
       <h5 class="panel-title">${round ? (sending ? "Sending texts…" : "Waiting for replies") : "Getting the next round ready…"}</h5>
@@ -618,7 +1013,7 @@ function renderOffering(id, s) {
                 return `<li>
                   <div class="offered-main">
                     <span class="offered-top"><span class="pick-name">${esc(o.name)}</span>${chip(tone, word, icon)}</span>
-                    ${o.status === "live" && o.deadline ? `<span class="meta">Reply by ${esc(formatClock(o.deadline))} ${countdownSpan(o.deadline)}</span>` : ""}
+                    ${o.status === "live" && o.deadline ? `<span class="meta">Reply by ${esc(salonClock(s, o.deadline))} ${countdownSpan(o.deadline)}</span>` : ""}
                   </div>
                   ${o.status === "live" ? `<a class="btn btn-secondary btn-sm" href="${offerUrl(id, o)}" target="_blank" rel="noopener">Preview client’s text (simulated)<span class="sr-only"> for ${esc(o.name)}, opens in new tab</span></a>` : ""}
                 </li>`;
@@ -626,8 +1021,9 @@ function renderOffering(id, s) {
               .join("")}</ul>`
           : ""
       }
-      ${sent ? textPreview(sent.smsText.replace(/https?:\/\/\S+/, "[offer link]"), `To ${esc(sent.name)}${sent.sentAt ? ` · would have been sent ${esc(formatClock(sent.sentAt))}` : ""}`) : ""}
-      ${round?.deadline ? `<p class="meta row-wrap">First yes wins.${s.opening.fastDemo ? ` ${chip("demo", "Fast demo", "message")}` : ""}</p>` : ""}
+      ${capped}
+      ${sent ? textPreview(sent.smsText.replace(/https?:\/\/\S+/, "[offer link]"), `To ${esc(sent.name)}${sent.sentAt ? ` · would have been sent ${esc(salonClock(s, sent.sentAt))}` : ""}`) : ""}
+      ${round?.deadline ? `<p class="meta row-wrap">First yes wins.${bypassChip(s) ? ` ${bypassChip(s)}` : ""}</p>` : ""}
       <p class="meta">${nextUp.length ? `Next up: ${esc(nextUp.join(", "))}` : "Next up: nobody. This is the last round."}</p>
     </div>`;
 }
@@ -639,9 +1035,9 @@ function renderHeld(id, s, ctx) {
   return `
     <div class="panel">
       <h5 class="panel-title">Held for ${esc(w?.name)}</h5>
-      <p>Said yes at ${esc(formatClock(w?.acceptedAt))}${w?.via === "late_yes" ? " (booked from a late yes)" : ""}.
+      <p>Said yes at ${esc(salonClock(s, w?.acceptedAt))}${w?.via === "late_yes" ? " (booked from a late yes)" : ""}.
         ${booking?.applied ? "Marked booked on the waitlist." : booking ? `<strong class="danger-text">Waitlist not updated: ${esc(booking.reason)} — check before confirming.</strong>` : "Updating waitlist…"}</p>
-      <p>Hold releases at <strong>${esc(formatClock(w?.holdUntil))}</strong> ${countdownSpan(w?.holdUntil ?? 0, 120_000)} if not confirmed.</p>
+      <p>Hold releases at <strong>${esc(salonClock(s, w?.holdUntil))}</strong> ${countdownSpan(w?.holdUntil ?? 0, 120_000)} if not confirmed.</p>
       <p class="panel-key">To do: confirm with ${esc(firstName(w?.name))} and update the appointment in Square.</p>
       <p class="meta">This prototype doesn't change Square.</p>
       <div class="actions actions--split">
@@ -662,27 +1058,29 @@ function renderStatusBlock(id, s, ctx, past = false) {
       return renderOffering(id, s);
     case "unfilled": {
       const noMatches = s.unfilledKind === "no_matches";
+      const tooClose = s.unfilledKind === "too_close" && !past;
       const passed = s.unfilledKind === "time_passed" || past;
-      const help = passed
+      const stopped = passed || tooClose;
+      const help = stopped
         ? "“Leave it open” closes it. It counts as not refilled."
         : noMatches
           ? "“Check again” reads the current waitlist again. “Leave it open” counts as not refilled."
-          : "“Keep trying” checks the waitlist again, skips anyone who said no, and asks you to approve. “Leave it open” counts as not refilled.";
+          : "“Keep trying” checks the waitlist again and asks you to approve. Anyone who said no is skipped; people texted before with no reply go to the end of the list. “Leave it open” counts as not refilled.";
       const reason = passed && s.unfilledKind !== "time_passed" ? "The appointment time has passed." : s.unfilledReason;
       return `
         <div class="panel">
-          <h5 class="panel-title">${passed ? "The time has passed" : "What next?"}</h5>
+          <h5 class="panel-title">${passed ? "The time has passed" : tooClose ? "Stopped offering" : "What next?"}</h5>
           ${reason ? `<p>${esc(reason)}</p>` : ""}
           <p class="meta">${help}</p>
           <div class="actions">
-            ${passed ? "" : `<button type="button" class="btn btn-primary" data-action="keep-trying" data-id="${eid}">${noMatches ? "Check again" : "Keep trying"}</button>`}
-            <button type="button" class="btn ${passed ? "btn-primary" : "btn-secondary"}" data-action="leave-open" data-id="${eid}">Leave it open</button>
+            ${stopped ? "" : `<button type="button" class="btn btn-primary" data-action="keep-trying" data-id="${eid}">${noMatches ? "Check again" : "Keep trying"}</button>`}
+            <button type="button" class="btn ${stopped ? "btn-primary" : "btn-secondary"}" data-action="leave-open" data-id="${eid}">Leave it open</button>
           </div>
         </div>`;
     }
     case "filled":
       if (s.square.done) {
-        return `<p class="outcome-line">${ICONS.check}<span>Booked for ${esc(s.winner?.name)}. Confirmed in Square at ${esc(formatClock(s.square.doneAt))}.</span></p>`;
+        return `<p class="outcome-line">${ICONS.check}<span>Booked for ${esc(s.winner?.name)}. Confirmed in Square at ${esc(salonClock(s, s.square.doneAt))}.</span></p>`;
       }
       return renderHeld(id, s, ctx);
     case "cancelled":
@@ -710,7 +1108,7 @@ function renderLateYes(id, s, open = true) {
       (o) => `
     <div class="panel panel--warn">
       <h5 class="panel-title">${esc(o.name)} said yes late</h5>
-      <p>Replied at ${esc(formatClock(o.lateYesAt))}, after the reply window ended. Not booked yet. They were told the salon will check.</p>
+      <p>Replied at ${esc(salonClock(s, o.lateYesAt))}, after the reply window ended. Not booked yet. They were told the salon will check.</p>
       <div class="actions">
         ${canBook ? `<button type="button" class="btn ${bookClass}" data-action="late-book" data-offer="${esc(o.offerId)}" data-id="${esc(id)}">Book ${esc(firstName(o.name))}</button>` : `<p class="meta">Too late to book here — ${s.status === "filled" ? "someone else holds it" : "outreach is closed"}.</p>`}
         <button type="button" class="btn btn-secondary" data-action="late-dismiss" data-offer="${esc(o.offerId)}" data-id="${esc(id)}">Dismiss<span class="sr-only"> ${esc(o.name)}'s late yes</span></button>
@@ -751,7 +1149,7 @@ function renderFoot(o, s, title, ctx) {
             .reverse()
             .map(
               (h) =>
-                `<li><time datetime="${new Date(h.at).toISOString()}">${esc(formatClock(h.at))}</time><span>${/^simulated text/i.test(h.text) ? `${chip("demo", "Simulated", "message")} ` : ""}${esc(h.text)}</span></li>`,
+                `<li><time datetime="${new Date(h.at).toISOString()}">${esc(salonClock(s, h.at))}</time><span>${/^simulated text/i.test(h.text) ? `${chip("demo", "Simulated", "message")} ` : ""}${esc(h.text)}</span></li>`,
             )
             .join("")}
         </ol>
@@ -788,8 +1186,8 @@ function renderCard(o, c, group) {
   const progress =
     s.status === "offering" && round
       ? `Round ${round.number} · ${roundOffers.length} texted`
-      : `Up to ${op.batchSize} per round · ${windowText(op.replyWindowSeconds)} to reply`;
-  const demoChips = `${op.fastDemo ? chip("demo", "Fast demo", "message") : ""}${op.simulateTextFailure ? chip("demo", "Simulated text failure", "message") : ""}`;
+      : `Up to ${op.batchSize} per round · ${windowText(op.replyWindowSeconds)} to reply${op.stopOfferingMinutesBefore ? ` · stops ${minutesText(op.stopOfferingMinutesBefore)} before` : ""}`;
+  const demoChips = `${op.fastDemo ? chip("demo", "Fast demo ignores texting hours", "message") : ""}${op.simulateTextFailure ? chip("demo", "Simulated text failure", "message") : ""}`;
   const tone =
     group !== "needs" ? "" : c.lateYes && s.status !== "filled" && s.status !== "unfilled" ? "warn" : c.held ? "held" : s.status === "unfilled" ? "nobody" : "warn";
   // Each part of the date line stays whole ("12:30 PM" never splits); separators lead the next part.
@@ -797,7 +1195,7 @@ function renderCard(o, c, group) {
     .map((part, i) => `<span class="nw">${i ? "· " : ""}${esc(part)}</span>`)
     .join(" ");
   const titleHtml = `<h4 class="opening-title${s.status === "cancelled" ? " is-struck" : ""}" id="op-${eid}-title" tabindex="-1">${esc(title)}<span class="sr-only">, ${esc(slot.day)} ${esc(slot.start)}</span></h4>`;
-  const chips = `<div class="opening-chips">${statusChip(s)}${c.past ? chip("neutral", "Past", "clock") : ""}${c.lateYes ? chip("warn", "Late yes", "alert") : ""}</div>`;
+  const chips = `<div class="opening-chips">${statusChip(s)}${c.past ? chip("neutral", "Past", "clock") : ""}${c.lateYes ? chip("warn", "Late yes", "alert") : ""}${o.lastMinute ? chip("neutral", `Last-minute (within ${lastData?.refill?.lastMinuteHours ?? 48} h)`, "clock") : ""}</div>`;
   if (group === "finished") {
     const open = expanded.has(id);
     return `<article class="opening opening--finished" id="card-${eid}" data-id="${eid}" data-key="${esc(c.key)}" aria-labelledby="op-${eid}-title">
@@ -937,13 +1335,69 @@ function applyStatFilter() {
 // ---------------------------------------------------------------------------
 // Rendering: waitlist
 // ---------------------------------------------------------------------------
-function clientChip(c) {
-  if (c.optedOut) return chip("danger", "Opted out, never texted", "ban");
+const CONSENT = {
+  opted_in: ["ok", "Opted in to texts", "check"],
+  opted_out: ["danger", "Opted out — don't text", "ban"],
+  not_asked: ["warn", "Not asked yet — don't text", "question"],
+};
+const consentOf = (c) => (c.textingConsent in CONSENT ? c.textingConsent : "not_asked");
+function consentChip(c) {
+  const [tone, text, icon] = CONSENT[consentOf(c)];
+  return chip(tone, text, icon);
+}
+function clientStatusChip(c) {
+  if (c.status === "removed") return chip("neutral", "Removed — asked to come off", "ban");
   if (c.status === "booked" && c.holding?.held) return chip("held", "Held, staff to confirm", "clock");
   if (c.status === "booked") return chip("ok", "Booked", "check");
   if (c.holding) return chip("info", `Offer out${c.holding.deadline ? ` · ${esc(formatClock(c.holding.deadline))}` : ""}`, "clock");
   // "Waiting" is the default state: only label it when the list mixes states.
   return wlFilter === "all" ? chip("neutral", "Waiting", "dot") : "";
+}
+const wlManageOpen = new Set();
+const canRemove = (c) => c.status === "waiting" && !c.holding;
+
+function renderClient(c) {
+  const id = esc(c.id);
+  const name = esc(c.name);
+  const removed = c.status === "removed";
+  const consent = consentOf(c);
+  const chips = `<span class="client-chips">${clientStatusChip(c)}${removed ? "" : consentChip(c)}</span>`;
+  const removedLine = removed
+    ? `<p class="client-meta">Removed${c.removedAt ? ` ${esc(shortDate(c.removedAt))}` : ""}${c.removedReason ? `: “${esc(c.removedReason)}”` : ""}. Kept for history; never suggested or texted.</p>`
+    : "";
+  let actions = "";
+  if (!removed) {
+    const open = wlManageOpen.has(c.id);
+    const consentDetail =
+      consent === "not_asked"
+        ? "Not asked yet"
+        : `${CONSENT[consent][1]}${c.consentSource ? ` (${esc(c.consentSource.toLowerCase())}${c.consentRecordedAt ? `, ${esc(shortDate(c.consentRecordedAt))}` : ""})` : ""}`;
+    const removeBit = canRemove(c)
+      ? `<button type="button" class="btn btn-danger-quiet btn-sm" data-action="wl-remove" data-id="${id}">Remove from waitlist<span class="sr-only">: ${name}</span></button>`
+      : `<p class="meta">${c.status === "booked" ? "Booked from an opening, so they can't be removed here." : "Has an offer out right now. Cancel or finish their current offer before removing them."}</p>`;
+    actions = `
+      <div class="client-row-actions">
+        ${consent === "not_asked" ? `<button type="button" class="btn btn-secondary btn-sm" data-action="wl-consent" data-id="${id}">Record texting answer<span class="sr-only"> for ${name}</span></button>` : ""}
+        <button type="button" class="btn btn-quiet btn-sm" data-action="wl-manage" data-id="${id}" aria-expanded="${open}" aria-controls="wlm-${id}">Manage<span class="sr-only"> ${name}</span>${ICONS.chevron}</button>
+      </div>
+      <div class="client-manage" id="wlm-${id}" ${open ? "" : "hidden"}>
+        <dl>
+          <div><dt>Mobile</dt><dd>${esc(c.mobile)}</dd></div>
+          <div><dt>Texting answer</dt><dd>${consentDetail}</dd></div>
+        </dl>
+        <div class="actions">
+          ${consent === "not_asked" ? "" : `<button type="button" class="btn btn-secondary btn-sm" data-action="wl-consent" data-id="${id}" data-where="manage">Record texting answer<span class="sr-only"> for ${name}</span></button>`}
+          ${removeBit}
+        </div>
+      </div>`;
+  }
+  return `<li class="client${removed ? " is-removed" : ""}" id="client-${id}">
+        <div class="client-top"><span class="client-name">${name}</span>${chips}</div>
+        <p class="client-meta">${esc(c.service)} · ${esc(c.stylistRuleText)} · joined ${esc(shortDate(c.joinedAt))}</p>
+        <p class="client-note">${c.availabilityNote ? `“${esc(c.availabilityNote)}”` : '<span class="muted">No availability note</span>'}</p>
+        ${removedLine}
+        ${actions}
+      </li>`;
 }
 
 function renderWaitlist(data) {
@@ -964,28 +1418,22 @@ function renderWaitlist(data) {
     b.setAttribute("aria-pressed", String(pressed));
   });
   $("#vs-waitlist").textContent = `(${count("waiting")})`;
+  const waiting = wl.clients.filter((c) => c.status === "waiting");
+  const n = (k) => waiting.filter((c) => consentOf(c) === k).length;
+  const consentHtml = `${ICONS.info}<span>Only clients who opted in are suggested or texted. Waiting: ${n("opted_in")} opted in · ${n("opted_out")} opted out · ${n("not_asked")} not asked yet.</span>`;
+  patch($("#wl-consent"), consentHtml);
   const clients = wl.clients
     .filter((c) => wlFilter === "all" || c.status === wlFilter)
     .filter((c) => !wlStylist || c.stylistRule?.kind !== "required" || c.stylistRule.stylist === wlStylist)
     .filter((c) => !wlService || c.service === wlService)
-    .sort((a, b) => (a.joinedAt < b.joinedAt ? -1 : 1));
+    // Removed people sink to the end of "All"; otherwise earliest joiner first.
+    .sort((a, b) => (a.status === "removed") - (b.status === "removed") || (a.joinedAt < b.joinedAt ? -1 : 1));
   const filtered = wlStylist || wlService;
   const empty =
     wlFilter === "booked" && !filtered
       ? `<li class="wl-empty">Nobody has been booked from the waitlist yet.</li>`
       : `<li class="wl-empty"><p>No one matches these filters.</p>${filtered ? `<button type="button" class="btn btn-quiet btn-sm" data-action="clear-wl-filters">Clear filters</button>` : ""}</li>`;
-  patch(
-    $("#waitlist"),
-    clients
-      .map(
-        (c) => `<li class="client">
-        <div class="client-top"><span class="client-name">${esc(c.name)}</span>${clientChip(c)}</div>
-        <p class="client-meta">${esc(c.service)} · ${esc(c.stylistRuleText)} · joined ${esc(shortDate(c.joinedAt))}</p>
-        <p class="client-note">“${esc(c.availabilityNote)}”</p>
-      </li>`,
-      )
-      .join("") || empty,
-  );
+  patch($("#waitlist"), clients.map(renderClient).join("") || empty);
   updateWaitlistTabstop();
 }
 /** The waitlist panel is a tab stop only when it scrolls on its own (desktop), so keyboard users can scroll it. */
@@ -1008,7 +1456,7 @@ function updateAttention(openings) {
     if (!s) continue;
     const what = `${s.opening.service} · ${s.opening.stylist} ${slotParts(s.opening.startsAt).short}`;
     if (s.status === "awaiting_approval") items.push([`${o.workflowId}:approve:${s.cycle}`, `Approve who gets texted — ${what}`]);
-    if (s.status === "unfilled") items.push([`${o.workflowId}:unfilled:${s.cycle}`, `Nobody took it — ${what}`]);
+    if (s.status === "unfilled") items.push([`${o.workflowId}:unfilled:${s.cycle}`, `${s.unfilledKind === "too_close" ? "Too close to the start time" : "Nobody took it"} — ${what}`]);
     if (s.status === "filled" && !s.square.done && s.winner) items.push([`${o.workflowId}:held:${s.winner.offerId}`, `${s.winner.name} said yes — confirm in Square (${what})`]);
     if (lateYesOpen(o)) for (const x of pendingLate(s)) items.push([`${o.workflowId}:late:${x.offerId}`, `${x.name} said yes late — ${what}`]);
   }
@@ -1131,7 +1579,7 @@ async function staffAction(id, action, body, button, busyLabel = "Saving…") {
   busy = true;
   try {
     const result = await api(`/api/openings/${encodeURIComponent(id)}/${action}`, { method: "POST", body: body ?? {} });
-    toast(result.message);
+    toast(action === "approve" ? await approveOutcome(id, result.message) : result.message);
     if (action === "approve") selections.delete(id);
   } catch (error) {
     toast(error.message, true);
@@ -1148,6 +1596,25 @@ async function staffAction(id, action, body, button, busyLabel = "Saving…") {
 }
 
 const findState = (id) => lastData?.openings.find((o) => o.workflowId === id)?.state;
+
+/**
+ * After approval, say what actually happened (texts out, scheduled for texting hours, or stopped)
+ * rather than promising "texts are going out". Polls briefly while the round gets going.
+ */
+async function approveOutcome(id, fallback) {
+  for (let i = 0; i < 12; i++) {
+    const s = await api(`/api/openings/${encodeURIComponent(id)}`).then((r) => r.state).catch(() => null);
+    if (s?.status === "offering" && s.scheduled) return `${fallback} ${s.scheduled.text}.`;
+    if (s?.status === "offering" && s.currentRound?.sentAt) {
+      const names = s.offers.filter((o) => s.currentRound.offerIds.includes(o.offerId)).map((o) => o.name);
+      return `${fallback} Simulated texts sent to ${names.join(", ")}.`;
+    }
+    if (s?.status === "unfilled") return `${fallback} Offers stopped: ${s.unfilledReason}`;
+    if (s && s.status !== "offering") return fallback;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return `${fallback} Sending texts…`;
+}
 
 function confirmCopy(kind, id, offerId) {
   const s = findState(id);
@@ -1188,6 +1655,23 @@ document.addEventListener("click", async (event) => {
   switch (action) {
     case "add-opening":
       openOpeningDialog(el);
+      break;
+    case "add-client":
+      openClientDialog(el);
+      break;
+    case "wl-manage": {
+      const open = !wlManageOpen.has(id);
+      open ? wlManageOpen.add(id) : wlManageOpen.delete(id);
+      el.setAttribute("aria-expanded", String(open));
+      document.getElementById(`wlm-${id}`).hidden = !open;
+      $("#waitlist")._html = null; // re-render keeps the new open state
+      break;
+    }
+    case "wl-consent":
+      openConsentDialog(id, el);
+      break;
+    case "wl-remove":
+      removeFromWaitlist(id, el);
       break;
     case "alerts":
       enableAlerts();
@@ -1245,7 +1729,7 @@ document.addEventListener("click", async (event) => {
       const body = { clientIds: [...sel], batchSize: Number(settings.batchSize) };
       if (settings.replyWindow === "fast") body.fastDemo = true;
       else body.replyWindowMinutes = Number(settings.replyWindow);
-      staffAction(id, "approve", body, el, "Sending…");
+      staffAction(id, "approve", body, el, "Approving…");
       break;
     }
     case "ask": {

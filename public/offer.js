@@ -74,6 +74,18 @@ function slot(startsAt, durationMinutes) {
   };
 }
 
+/** "25 minutes", "1 hour 30 minutes", "30 seconds" */
+function windowWords(seconds) {
+  if (!seconds) return "";
+  if (seconds < 60) return `${seconds} seconds`;
+  const m = Math.round(seconds / 60);
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  const hours = h ? `${h} hour${h === 1 ? "" : "s"}` : "";
+  const mins = r ? `${r} minute${r === 1 ? "" : "s"}` : "";
+  return [hours, mins].filter(Boolean).join(" ");
+}
+
 function remaining() {
   if (!view?.deadline) return null;
   return Math.max(0, view.deadline - (Date.now() + serverOffset));
@@ -155,7 +167,7 @@ function render() {
   const message = lastResult?.message ?? view.message;
   const outcome = lastResult?.outcome ?? view.outcome;
   // Only re-render when the view really changes; the countdown updates its own node.
-  const sig = JSON.stringify([canRespond, expiredLocally, outcome, message, view.deadline, view.startsAt, view.smsText, view.roundSize, view.fastDemo, submitting]);
+  const sig = JSON.stringify([canRespond, expiredLocally, outcome, message, view.deadline, view.startsAt, view.smsText, view.roundSize, view.fastDemo, view.windowCapped, view.replyWindowSeconds, submitting]);
   if (sig === lastSig) return;
   lastSig = sig;
 
@@ -185,6 +197,11 @@ function render() {
     ? `<div class="decision-offer">
         <p class="deadline">Reply by ${esc(deadline)} <span class="countdown${left < 60_000 ? " low" : ""}" id="countdown" aria-hidden="true">${esc(leftText(left ?? 0))}</span></p>
         ${view.fastDemo ? `<p><span class="chip chip--demo">${ICONS.message}Fast demo: 30-second reply window</span></p>` : ""}
+        ${
+          view.windowCapped && view.replyWindowSeconds
+            ? `<p class="rule">${ICONS.clock}<span>You have ${esc(windowWords(view.replyWindowSeconds))} to reply. That's shorter than usual so there's time to get to the salon before ${esc(p.start)}.</span></p>`
+            : ""
+        }
         <p class="rule">${ICONS.info}<span>${
           view.roundSize > 1
             ? `Offered to ${esc(view.roundSize)} people. The first yes gets it. Late replies aren't guaranteed.`
