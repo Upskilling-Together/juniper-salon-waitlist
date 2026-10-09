@@ -26,6 +26,11 @@ It installs dependencies, starts Temporal in Docker, and launches the Worker and
 
 Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Temporal's data is kept in a Docker volume. To start over with a fresh waitlist, run `docker compose down -v`. (A waitlist saved by an earlier version is upgraded in place: the old "opted out" flag becomes a texting answer, anyone without a recorded answer becomes **Not asked yet**, and Highlights / Trim become Color / Haircut. Openings started by an earlier version can't be shown; start fresh to see the new rules end to end.)
 
+## Presentation and evidence
+
+- Slides for Lena (5 pages, PDF): [`presentation/Open-Chairs-Juniper-Salon.pdf`](presentation/Open-Chairs-Juniper-Salon.pdf)
+- Temporal Web UI screenshot of a completed opening, plus app screenshots: [`evidence/`](evidence/)
+
 ## Try it
 
 1. **Create an opening.** Click **Add opening** and enter a Haircut with Lena at least two hours from now (the length fills in from the service). Open **Offer settings** and set **Reply window** to **Fast demo: 30 seconds**. Fast demo ignores texting hours, so this works at any time of day.
