@@ -21,6 +21,12 @@ const ICONS = {
   question: svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17v.01"/>'),
   phone: svg('<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 17.5h2"/>'),
   chevron: svg('<path d="m6 9 6 6 6-6"/>').replace('class="icon"', 'class="icon chev"'),
+  // Automation status line ("is it still working on this?")
+  play: svg('<circle cx="12" cy="12" r="9"/><path d="m10 8.5 5.5 3.5-5.5 3.5z" fill="currentColor"/>'),
+  pause: svg('<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7"/><path d="M14 8.5v7"/>'),
+  stop: svg('<circle cx="12" cy="12" r="9"/><rect x="8.75" y="8.75" width="6.5" height="6.5" rx="1" fill="currentColor"/>'),
+  hand: svg('<path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11V5a1.5 1.5 0 0 1 3 0v6"/><path d="M14 11V6.5a1.5 1.5 0 0 1 3 0V14a6 6 0 0 1-6 6h-.5a6 6 0 0 1-4.6-2.2L4 15.4a1.5 1.5 0 0 1 2.3-1.9L8 15"/>'),
+  warn: svg('<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5"/><path d="M12 17.5v.01"/>'),
 };
 const ext = '<span aria-hidden="true"> ↗</span>';
 const chip = (state, text, icon) => `<span class="chip chip--${state}">${icon ? ICONS[icon] : ""}${text}</span>`;
@@ -38,6 +44,9 @@ let opTab = "active";
 let statFilter = null; // "awaiting_approval" | "held" | "unfilled" | "offering"
 let view = "openings"; // phone/tablet only
 let connState = null;
+let lastOkAt = null; // last time the dashboard loaded (browser clock)
+let unreachable = null; // null, or { message } while the API can't be reached
+let dismissedRecovery = null; // outage.startedAt whose "running again" notice was closed
 let attentionCount = 0;
 let titleError = false;
 const selections = new Map(); // openingId -> Set(clientIds) while awaiting approval
@@ -121,7 +130,16 @@ function windowText(seconds) {
   return m >= 60 && m % 60 === 0 ? `${m / 60} hr` : `${m} min`;
 }
 /** Secondary, relative countdown text: "(14:12 left)" or "(about 1 hr 5 min left)". */
+/** While nothing is timing out (outage) or we can't tell (offline), countdowns say so instead of ticking. */
+function countdownFrozen() {
+  if (unreachable) return "(can't check right now)";
+  if (lastData?.system && !lastData.system.workerOk) return "(paused — closes when the background service is back)";
+  if (lastData?.system?.readError) return "(can't check right now)";
+  return null;
+}
 function countdownState(deadline, lowMs) {
+  const frozen = countdownFrozen();
+  if (frozen) return { text: frozen, low: false };
   const ms = deadline - now();
   if (ms <= 0) return { text: "(time's up)", low: false };
   // Changes once a minute (seconds only in the final minute) so the page isn't constantly moving.
@@ -182,12 +200,32 @@ document.addEventListener("keydown", (event) => {
   closeAlert();
 });
 
+/**
+ * fetch + JSON with a time limit, so a hung server shows up as a problem instead of a page that looks fine.
+ * Staff actions wait longer (the server itself gives up after ~8 s and says so).
+ */
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const { timeoutMs = options.method === "POST" ? 15_000 : 8_000, ...rest } = options;
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...rest,
+      body: rest.body ? JSON.stringify(rest.body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      const e = new Error(
+        rest.method === "POST"
+          ? "No answer from the system, so this may not have been saved. Check the opening before trying again."
+          : `No answer from the system within ${timeoutMs / 1000} seconds.`,
+      );
+      e.timeout = true;
+      throw e;
+    }
+    throw error;
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error || `Request failed (${response.status})`);
@@ -197,9 +235,17 @@ async function api(path, options = {}) {
   return body;
 }
 
+/** "STOPPED – " / "Offline – " / "Out of date – " in front of the tab title while the system has a problem. */
+function systemTitlePrefix() {
+  if (unreachable) return "Offline – ";
+  const sys = lastData?.system;
+  if (sys && !sys.workerOk) return "STOPPED – ";
+  if (sys?.readError) return "Out of date – ";
+  return "";
+}
 function setTitle() {
   const n = attentionCount;
-  document.title = `${titleError ? "Error: " : ""}${n ? `(${n} need${n === 1 ? "s" : ""} you) ` : ""}Open chairs – Juniper Salon`;
+  document.title = `${systemTitlePrefix()}${titleError ? "Error: " : ""}${n ? `(${n} need${n === 1 ? "s" : ""} you) ` : ""}Open chairs – Juniper Salon`;
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +453,7 @@ async function setupForm() {
       fastDemo: choice === "fast",
       replyWindowMinutes: choice === "auto" || choice === "fast" ? null : Number(choice),
       simulateTextFailure: fd.get("simulateTextFailure") === "on",
+      simulateTextsKeepFailing: fd.get("simulateTextsKeepFailing") === "on",
     };
     const btn = $("#create-btn");
     creating = true;
@@ -418,12 +465,13 @@ async function setupForm() {
       openingDialog.close();
       skipReturnFocus = false;
       form.simulateTextFailure.checked = false;
+      form.simulateTextsKeepFailing.checked = false;
       toast(`Opening added. Finding matches for ${body.service} with ${body.stylist}.`);
       statFilter = null;
       opTab = "active";
       setView("openings");
       applyTabs();
-      await refresh();
+      await refresh(true);
       const card = document.getElementById(`card-${created.openingId}`);
       if (card && !card.closest("[hidden]")) {
         card.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
@@ -624,7 +672,7 @@ clientForm.addEventListener("submit", async (event) => {
     toast(result.message || `${result.client?.name ?? body.name} added to the back of the waitlist.`);
     wlFilter = "waiting";
     setView("waitlist");
-    await refresh();
+    await refresh(true);
     const row = result.client?.id && document.getElementById(`client-${result.client.id}`);
     if (row && !row.closest("[hidden]")) row.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "nearest" });
     $("#add-client-btn").focus({ preventScroll: true });
@@ -710,7 +758,7 @@ consentForm.addEventListener("submit", async (event) => {
     btn.removeAttribute("aria-busy");
     btn.textContent = "Save answer";
     const id = consentClient?.id;
-    await refresh();
+    await refresh(true);
     // The row's "Record texting answer" button goes away once they've answered: keep focus on that row.
     if (!consentDialog.open && (!document.activeElement || document.activeElement === document.body) && id) {
       (document.querySelector(`[data-action="wl-manage"][data-id="${CSS.escape(id)}"]`) ?? $("#add-client-btn")).focus();
@@ -741,7 +789,7 @@ async function removeFromWaitlist(clientId, trigger) {
     wlManageOpen.delete(clientId);
     toast(result.message || `${c.name} was removed from the waitlist.`);
     busy = false;
-    await refresh();
+    await refresh(true);
     $("#add-client-btn").focus();
   } catch (error) {
     toast(error.message, true);
@@ -766,9 +814,24 @@ const pendingLate = (s) => s.offers.filter((x) => x.lateReply === "expired" && !
 /** The appointment time has already gone by (server clock). */
 const isPast = (s) => s.opening.startsAtMs !== undefined && s.opening.startsAtMs < now();
 
+/** The automation itself needs staff: an opening stopped unexpectedly, or a step (e.g. texts) keeps failing. */
+const automationProblem = (o) => Boolean(o.automation?.needsYou);
+const stoppedUnexpectedly = (o) => o.automation?.kind === "stopped_unexpectedly";
+
 function classify(o) {
   const s = o.state;
-  if (!s) return { group: "finished", key: "unknown" };
+  if (!s) {
+    if (automationProblem(o)) return { group: "needs", key: "problem", problem: true };
+    if (stoppedUnexpectedly(o)) return { group: "finished", key: "problem", problem: true };
+    // Still running but unreadable for now (background service down): keep it with the active openings.
+    return { group: o.running !== false ? "waiting" : "finished", key: "unknown" };
+  }
+  if (stoppedUnexpectedly(o)) {
+    // Handled by staff, or its time has gone by: it leaves "Needs you" (a count that never clears gets ignored).
+    const done = !o.automation.needsYou || isPast(s);
+    return { group: done ? "finished" : "needs", key: "problem", problem: true, held: false, lateYes: false, past: !done && isPast(s) };
+  }
+  if (automationProblem(o)) return { group: "needs", key: "problem", problem: true, held: false, lateYes: false, past: isPast(s) };
   const lateYes = pendingLate(s).length > 0 && lateYesOpen(o);
   const held = s.status === "filled" && !s.square.done;
   let group = "finished";
@@ -837,6 +900,65 @@ function textPreview(text, metaLine) {
       <blockquote class="text-preview-body"><p>${esc(text)}</p></blockquote>
       ${metaLine ? `<p class="text-preview-meta">${metaLine}</p>` : ""}
     </figure>`;
+}
+
+/**
+ * Can the page vouch for what the cards say right now? Not while offline, or while Temporal can't be read
+ * and no outage is confirmed yet (once it is, the server's own "Paused" lines say it plainly).
+ */
+const pageOutOfDate = () => Boolean(unreachable || (lastData?.system?.readError && lastData.system.workerOk));
+
+/** One plain line on every card: is the automatic process still working on this opening? */
+function automationLine(o) {
+  const a = o.automation;
+  if (!a) return "";
+  const lastRead = lastOkAt ? formatClock(lastOkAt) : null;
+  // Offline (or Temporal can't be read): don't state live facts in the present tense.
+  if (pageOutOfDate() && a.active) {
+    const when = o.staleSince ? formatClock(o.staleSince - serverOffset) : lastRead;
+    const detail = `can't reach the system, so this may have changed${when ? ` (last read ${when})` : ""}`;
+    return `<p class="auto-status auto-status--warn" data-kind="unknown">${ICONS.question}<span><strong>Unknown</strong> — ${esc(detail)}</span></p>`;
+  }
+  const staleAt = o.stale && o.staleSince ? formatClock(o.staleSince - serverOffset) : unreachable && lastRead ? lastRead : null;
+  const stale = staleAt ? ` <span class="auto-stale">(${o.stale ? "last read" : "as of"} ${esc(staleAt)})</span>` : "";
+  const tech = a.technical ? `<span class="auto-tech">${esc(a.technical)}</span>` : "";
+  return `<p class="auto-status auto-status--${esc(a.tone)}" data-kind="${esc(a.kind)}">${ICONS[a.icon] ?? ICONS.info}<span><strong>${esc(a.label)}</strong>${a.detail ? ` — ${esc(a.detail)}` : ""}${stale}${tech}</span></p>`;
+}
+
+/** Temporal ended this opening's workflow outside its normal flow: say so, and who may be waiting to hear back. */
+function renderStoppedUnexpectedly(o) {
+  const s = o.state;
+  const statusWord = { FAILED: "Failed", TERMINATED: "Terminated", TIMED_OUT: "Timed out", CANCELLED: "Cancelled in Temporal", RUNNING: "Running, but can't be read" }[o.executionStatus] ?? o.executionStatus;
+  const waiting = s ? s.offers.filter((x) => x.status === "live" || x.status === "sending" || x.offerId === s.winner?.offerId) : [];
+  const people = waiting.length
+    ? `<p>People who may be waiting to hear back: ${waiting.map((x) => `${esc(x.name)} <span class="nw">${esc(x.mobile)}</span>`).join(", ")}.</p>`
+    : s ? `<p class="meta">Nobody had a live offer when it stopped.</p>` : "";
+  return `
+    <div class="panel panel--danger">
+      <h5 class="panel-title">Nothing more will happen on its own</h5>
+      <p>No texts will be sent, no reply windows will time out and no hold will be released for this opening.</p>
+      ${people}
+      <p class="meta">Temporal status: ${esc(statusWord ?? "unknown")}${o.error && !o.stale ? `. ${esc(o.error)}` : ""}</p>
+      <div class="actions">
+        <a class="btn btn-secondary" href="${esc(o.temporalUrl)}" target="_blank" rel="noopener">View workflow in Temporal${ext}<span class="sr-only"> (opens in new tab)</span></a>
+        ${
+          o.handledAt
+            ? `<p class="meta">${ICONS.check} Marked as handled at ${esc(formatClock(o.handledAt - serverOffset))}.</p>`
+            : `<button type="button" class="btn btn-quiet" data-action="ack-stop" data-id="${esc(o.workflowId)}">Mark as handled<span class="sr-only">: ${esc(o.workflowId)}</span></button>`
+        }
+      </div>
+      ${o.handledAt ? "" : `<p class="meta">Mark it as handled once you've checked it and contacted anyone waiting. It then moves to Finished.</p>`}
+    </div>`;
+}
+
+/** The card's main chip: the automation's own problem wins over the opening's status. */
+function cardChip(o) {
+  const kind = o.automation?.kind;
+  if (kind === "stopped_unexpectedly") return chip("danger", "Stopped unexpectedly", "warn");
+  if (kind === "texts_failing") return chip("danger", "Texts not sending", "warn");
+  if (kind === "step_failing") return chip("danger", "Step failing", "warn");
+  if (kind === "paused") return chip("warn", "Paused", "dot");
+  return statusChip(o.state);
 }
 
 function statusChip(s) {
@@ -948,6 +1070,7 @@ function patchApproval(id) {
 const OFFER_STATUS = {
   live: ["info", "Waiting for reply", "clock"],
   sending: ["info", "Sending…", "send"],
+  not_sent: ["neutral", "Not sent (cancelled)", "dot"],
   declined: ["neutral", "Declined", "dot"],
   timed_out: ["neutral", "No reply", "dot"],
   told_filled: ["neutral", "Told filled", "dot"],
@@ -991,8 +1114,10 @@ function renderScheduled(id, s) {
     </div>`;
 }
 
-function renderOffering(id, s) {
+function renderOffering(id, s, auto) {
   if (s.scheduled) return renderScheduled(id, s);
+  const failing = auto?.kind === "texts_failing";
+  const paused = auto?.kind === "paused";
   const round = s.currentRound;
   const roundOffers = round ? s.offers.filter((o) => round.offerIds.includes(o.offerId)) : [];
   const nextUp = s.queue.map((cid) => s.suggestions.find((m) => m.clientId === cid)?.name ?? cid);
@@ -1004,12 +1129,23 @@ function renderOffering(id, s) {
       : "";
   return `
     <div class="panel">
-      <h5 class="panel-title">${round ? (sending ? "Sending texts…" : "Waiting for replies") : "Getting the next round ready…"}</h5>
+      <h5 class="panel-title">${
+        paused
+          ? "Paused — waiting for the background service"
+          : failing
+            ? "Texts aren't going out"
+            : round
+              ? sending
+                ? "Sending texts…"
+                : "Waiting for replies"
+              : "Getting the next round ready…"
+      }</h5>
       ${
         roundOffers.length
           ? `<ul class="offered">${roundOffers
               .map((o) => {
-                const [tone, word, icon] = OFFER_STATUS[o.status] ?? ["neutral", o.status, "dot"];
+                const [tone, word, icon] =
+                  o.status === "sending" && failing ? ["danger", "Not sent yet — retrying", "alert"] : (OFFER_STATUS[o.status] ?? ["neutral", o.status, "dot"]);
                 return `<li>
                   <div class="offered-main">
                     <span class="offered-top"><span class="pick-name">${esc(o.name)}</span>${chip(tone, word, icon)}</span>
@@ -1047,7 +1183,7 @@ function renderHeld(id, s, ctx) {
     </div>`;
 }
 
-function renderStatusBlock(id, s, ctx, past = false) {
+function renderStatusBlock(id, s, ctx, past = false, auto = null) {
   const eid = esc(id);
   switch (s.status) {
     case "finding_matches":
@@ -1055,7 +1191,7 @@ function renderStatusBlock(id, s, ctx, past = false) {
     case "awaiting_approval":
       return renderApproval(id, s);
     case "offering":
-      return renderOffering(id, s);
+      return renderOffering(id, s, auto);
     case "unfilled": {
       const noMatches = s.unfilledKind === "no_matches";
       const tooClose = s.unfilledKind === "too_close" && !past;
@@ -1084,7 +1220,13 @@ function renderStatusBlock(id, s, ctx, past = false) {
       }
       return renderHeld(id, s, ctx);
     case "cancelled":
-      return `<p class="outcome-line">${s.cancelReason ? `${esc(s.cancelReason)}. ` : ""}Anyone holding an offer was told it's no longer available.</p>`;
+      return `<p class="outcome-line">${s.cancelReason ? `${esc(s.cancelReason)}. ` : ""}${
+        s.offers.some((x) => x.status === "told_cancelled")
+          ? "Anyone holding an offer was told it's no longer available."
+          : s.offers.some((x) => x.status === "not_sent")
+            ? "The offer texts hadn't gone out, so nobody was told."
+            : "Nobody had an offer out, so nobody was texted."
+      }</p>`;
     case "left_open":
       return `<p class="outcome-line">Stopped offering. Counted as not refilled.</p>`;
     default:
@@ -1139,8 +1281,8 @@ function renderPeople(s) {
 
 function renderFoot(o, s, title, ctx) {
   const id = o.workflowId;
-  const closed = ["filled", "cancelled", "left_open"].includes(s.status);
-  const canCancel = !closed || (s.status === "filled" && !s.square.done);
+  const closed = ["filled", "cancelled", "left_open"].includes(s.status) || o.running === false;
+  const canCancel = o.running !== false && (!closed || (s.status === "filled" && !s.square.done));
   return `<div class="opening-foot">
       <details class="history" data-history="${esc(id)}" ${openHistory.has(id) ? "open" : ""}>
         <summary>History (${s.history.length})</summary>
@@ -1154,7 +1296,7 @@ function renderFoot(o, s, title, ctx) {
             .join("")}
         </ol>
       </details>
-      <a class="foot-link" href="${esc(o.temporalUrl)}" target="_blank" rel="noopener">View workflow in Temporal${ext}<span class="sr-only"> (opens in new tab)</span></a>
+      ${stoppedUnexpectedly(o) ? "" : `<a class="foot-link" href="${esc(o.temporalUrl)}" target="_blank" rel="noopener">View workflow in Temporal${ext}<span class="sr-only"> (opens in new tab)</span></a>`}
       ${canCancel ? `<button type="button" class="btn btn-danger-quiet" data-action="ask" data-confirm="cancel" data-id="${esc(id)}">Cancel opening<span class="sr-only">: ${esc(title)}, ${esc(ctx)}</span></button>` : ""}
     </div>`;
 }
@@ -1163,17 +1305,25 @@ function renderCard(o, c, group) {
   const id = o.workflowId;
   const eid = esc(id);
   if (!o.state) {
-    return `<article class="opening" id="card-${eid}" data-id="${eid}" data-key="unknown" aria-labelledby="op-${eid}-title">
+    const broken = o.automation?.kind === "stopped_unexpectedly";
+    return `<article class="opening${broken ? " opening--danger" : ""}" id="card-${eid}" data-id="${eid}" data-key="${broken ? "problem" : "unknown"}" aria-labelledby="op-${eid}-title">
       <div class="opening-head">
         <div class="opening-heading"><h4 class="opening-title" id="op-${eid}-title" tabindex="-1">${eid}</h4></div>
-        <div class="opening-chips">${chip("neutral", "Unknown", "dot")}</div>
+        <div class="opening-chips">${broken ? chip("danger", "Stopped unexpectedly", "warn") : chip("neutral", "Unknown", "dot")}</div>
+        ${automationLine(o)}
       </div>
-      <p class="outcome-line">${
-        !o.running && /nondeterminism/i.test(o.error ?? "")
-          ? "Closed opening from an earlier prototype build — its full history is still in Temporal."
-          : `Can't read this opening right now${o.error ? `: ${esc(o.error)}` : ""}. Is the Worker running?`
-      }</p>
-      <div class="opening-foot"><a class="foot-link" href="${esc(o.temporalUrl)}" target="_blank" rel="noopener">View in Temporal${ext}<span class="sr-only"> (opens in new tab)</span></a></div>
+      ${
+        broken
+          ? `<div class="decision">${renderStoppedUnexpectedly(o)}</div>`
+          : `<p class="outcome-line">${
+              o.automation?.kind === "paused"
+                ? "Details will show again when the background service is back."
+                : !o.running && /nondeterminism/i.test(o.error ?? "")
+                ? "Closed opening from an earlier prototype build — its full history is still in Temporal."
+                : `Can't read this opening right now${o.error ? `: ${esc(o.error.replace(/\.$/, ""))}` : ""}.`
+            }</p>`
+      }
+      ${broken ? "" : `<div class="opening-foot"><a class="foot-link" href="${esc(o.temporalUrl)}" target="_blank" rel="noopener">View in Temporal${ext}<span class="sr-only"> (opens in new tab)</span></a></div>`}
     </article>`;
   }
   const s = o.state;
@@ -1185,28 +1335,29 @@ function renderCard(o, c, group) {
   const roundOffers = round ? s.offers.filter((x) => round.offerIds.includes(x.offerId)) : [];
   const progress =
     s.status === "offering" && round
-      ? `Round ${round.number} · ${roundOffers.length} texted`
+      ? `Round ${round.number} · ${roundOffers.some((x) => x.status === "sending") ? `sending to ${roundOffers.length}` : `${roundOffers.length} texted`}`
       : `Up to ${op.batchSize} per round · ${windowText(op.replyWindowSeconds)} to reply${op.stopOfferingMinutesBefore ? ` · stops ${minutesText(op.stopOfferingMinutesBefore)} before` : ""}`;
-  const demoChips = `${op.fastDemo ? chip("demo", "Fast demo ignores texting hours", "message") : ""}${op.simulateTextFailure ? chip("demo", "Simulated text failure", "message") : ""}`;
+  const demoChips = `${op.fastDemo ? chip("demo", "Fast demo ignores texting hours", "message") : ""}${op.simulateTextFailure ? chip("demo", "Simulated text failure", "message") : ""}${op.simulateTextsKeepFailing ? chip("demo", "Simulated texts keep failing", "message") : ""}`;
+  const broken = o.automation?.kind === "stopped_unexpectedly";
   const tone =
-    group !== "needs" ? "" : c.lateYes && s.status !== "filled" && s.status !== "unfilled" ? "warn" : c.held ? "held" : s.status === "unfilled" ? "nobody" : "warn";
+    group !== "needs" ? "" : c.problem ? "danger" : c.lateYes && s.status !== "filled" && s.status !== "unfilled" ? "warn" : c.held ? "held" : s.status === "unfilled" ? "nobody" : "warn";
   // Each part of the date line stays whole ("12:30 PM" never splits); separators lead the next part.
   const when = [slot.rel ? `${slot.rel} · ${slot.day}` : slot.day, slot.range, `${op.durationMinutes} min`]
     .map((part, i) => `<span class="nw">${i ? "· " : ""}${esc(part)}</span>`)
     .join(" ");
   const titleHtml = `<h4 class="opening-title${s.status === "cancelled" ? " is-struck" : ""}" id="op-${eid}-title" tabindex="-1">${esc(title)}<span class="sr-only">, ${esc(slot.day)} ${esc(slot.start)}</span></h4>`;
-  const chips = `<div class="opening-chips">${statusChip(s)}${c.past ? chip("neutral", "Past", "clock") : ""}${c.lateYes ? chip("warn", "Late yes", "alert") : ""}${o.lastMinute ? chip("neutral", `Last-minute (within ${lastData?.refill?.lastMinuteHours ?? 48} h)`, "clock") : ""}</div>`;
+  const chips = `<div class="opening-chips">${cardChip(o)}${c.past ? chip("neutral", "Past", "clock") : ""}${c.lateYes ? chip("warn", "Late yes", "alert") : ""}${o.lastMinute ? chip("neutral", `Last-minute (within ${lastData?.refill?.lastMinuteHours ?? 48} h)`, "clock") : ""}</div>`;
   if (group === "finished") {
     const open = expanded.has(id);
     return `<article class="opening opening--finished" id="card-${eid}" data-id="${eid}" data-key="${esc(c.key)}" aria-labelledby="op-${eid}-title">
       <div class="opening-head">
         <div class="opening-heading">${titleHtml}<p class="opening-when">${when}</p></div>
         ${chips}
+        ${automationLine(o)}
         <button type="button" class="btn btn-quiet btn-sm details-toggle" data-action="toggle-details" data-id="${eid}" aria-expanded="${open}" aria-controls="det-${eid}">${open ? "Hide details" : "Show details"}<span class="sr-only">: ${esc(title)}</span>${ICONS.chevron}</button>
       </div>
       <div class="opening-details" id="det-${eid}" ${open ? "" : "hidden"}>
-        ${renderLateYes(id, s, false)}
-        ${renderStatusBlock(id, s, ctx)}
+        ${broken ? renderStoppedUnexpectedly(o) : `${renderLateYes(id, s, false)}${renderStatusBlock(id, s, ctx)}`}
         ${renderPeople(s)}
         ${renderFoot(o, s, title, ctx)}
       </div>
@@ -1218,11 +1369,11 @@ function renderCard(o, c, group) {
       <div class="opening-head">
         <div class="opening-heading">${titleHtml}<p class="opening-when">${when}</p></div>
         ${chips}
+        ${automationLine(o)}
         <p class="opening-progress"><span>${esc(progress)}</span>${demoChips}</p>
       </div>
       <div class="decision">
-        ${renderLateYes(id, s, lateYesOpen(o))}
-        ${renderStatusBlock(id, s, ctx, c.past)}
+        ${broken ? renderStoppedUnexpectedly(o) : `${renderLateYes(id, s, lateYesOpen(o))}${renderStatusBlock(id, s, ctx, c.past, o.automation)}`}
       </div>
       ${renderPeople(s)}
       ${renderFoot(o, s, title, ctx)}
@@ -1231,7 +1382,7 @@ function renderCard(o, c, group) {
 
 function sortKey(o, c) {
   const s = o.state;
-  if (!s) return 0;
+  if (!s || c.problem) return 0;
   // Things staff can still act on today come first; openings whose time has passed sink to the end.
   if (c.group === "needs") return (c.past ? 1e15 : 0) + (c.held && s.winner ? s.winner.holdUntil : startsAtMs(s.opening));
   if (c.group === "waiting") return (c.past ? 1e15 : 0) + (s.currentRound?.deadline ?? 1e14);
@@ -1240,7 +1391,7 @@ function sortKey(o, c) {
 
 function upsertCard(o, c, group) {
   const id = o.workflowId;
-  const sig = JSON.stringify([o.state, o.error, o.running, group, c.past, c.lateYes]);
+  const sig = JSON.stringify([o.state, o.error, o.running, o.automation, o.stale, o.handledAt, group, c.past, c.lateYes, pageOutOfDate(), unreachable ? lastOkAt : 0]);
   const el = document.getElementById(`card-${id}`);
   if (el && cardCache.get(id) === sig) return el;
   cardCache.set(id, sig);
@@ -1349,6 +1500,8 @@ function clientStatusChip(c) {
   if (c.status === "removed") return chip("neutral", "Removed — asked to come off", "ban");
   if (c.status === "booked" && c.holding?.held) return chip("held", "Held, staff to confirm", "clock");
   if (c.status === "booked") return chip("ok", "Booked", "check");
+  if (c.holding?.stopped) return chip("warn", "Offer stopped — check with client", "alert");
+  if (c.holding?.notSent) return chip("neutral", "Offer not sent yet", "clock");
   if (c.holding) return chip("info", `Offer out${c.holding.deadline ? ` · ${esc(formatClock(c.holding.deadline))}` : ""}`, "clock");
   // "Waiting" is the default state: only label it when the list mixes states.
   return wlFilter === "all" ? chip("neutral", "Waiting", "dot") : "";
@@ -1422,6 +1575,13 @@ function renderWaitlist(data) {
   const n = (k) => waiting.filter((c) => consentOf(c) === k).length;
   const consentHtml = `${ICONS.info}<span>Only clients who opted in are suggested or texted. Waiting: ${n("opted_in")} opted in · ${n("opted_out")} opted out · ${n("not_asked")} not asked yet.</span>`;
   patch($("#wl-consent"), consentHtml);
+  $("#wl-stale").hidden = !wl.staleSince;
+  patch(
+    $("#wl-stale"),
+    wl.staleSince
+      ? `${ICONS.pause}<span>Last read at ${esc(formatClock(wl.staleSince - serverOffset))}. Changes can't be saved until automatic offers are running again.</span>`
+      : "",
+  );
   const clients = wl.clients
     .filter((c) => wlFilter === "all" || c.status === wlFilter)
     .filter((c) => !wlStylist || c.stylistRule?.kind !== "required" || c.stylistRule.stylist === wlStylist)
@@ -1449,12 +1609,22 @@ function updateWaitlistTabstop() {
 // and (if allowed) a browser notification fires when something new needs a tap.
 // ---------------------------------------------------------------------------
 let seenAttention = null;
-function updateAttention(openings) {
+function updateAttention() {
+  const openings = lastData?.openings ?? [];
+  const system = lastData?.system;
   const items = [];
+  // The whole system first: an outage (or losing contact) is the one thing nobody may miss.
+  if (unreachable) items.push([`system:offline:${unreachable.since}`, "Can't reach the system — the dashboard may be out of date"]);
+  else if (system && !system.workerOk) items.push([`system:down:${system.outage?.startedAt ?? "now"}`, "Automatic offers have stopped"]);
   for (const o of openings) {
     const s = o.state;
-    if (!s) continue;
-    const what = `${s.opening.service} · ${s.opening.stylist} ${slotParts(s.opening.startsAt).short}`;
+    const a = o.automation;
+    const label = s ? `${s.opening.service} · ${s.opening.stylist} ${slotParts(s.opening.startsAt).short}` : o.workflowId;
+    if (a?.kind === "stopped_unexpectedly" && a.needsYou && !(s && isPast(s))) items.push([`${o.workflowId}:stopped`, `Stopped unexpectedly — ${label}`]);
+    if (a?.kind === "texts_failing") items.push([`${o.workflowId}:texts:${s?.currentRound?.number}`, `Texts aren't going out — ${label}`]);
+    if (a?.kind === "step_failing") items.push([`${o.workflowId}:step:${s?.status}`, `${a.label} — ${label}`]);
+    if (!s || a?.kind === "stopped_unexpectedly") continue;
+    const what = label;
     if (s.status === "awaiting_approval") items.push([`${o.workflowId}:approve:${s.cycle}`, `Approve who gets texted — ${what}`]);
     if (s.status === "unfilled") items.push([`${o.workflowId}:unfilled:${s.cycle}`, `${s.unfilledKind === "too_close" ? "Too close to the start time" : "Nobody took it"} — ${what}`]);
     if (s.status === "filled" && !s.square.done && s.winner) items.push([`${o.workflowId}:held:${s.winner.offerId}`, `${s.winner.name} said yes — confirm in Square (${what})`]);
@@ -1483,31 +1653,149 @@ async function enableAlerts() {
   $("#add-opening-btn").focus();
 }
 
-function setConn(ok) {
-  if (connState === ok) return;
-  connState = ok;
-  $("#conn").className = `conn ${ok ? "is-live" : "is-bad"}`;
-  $("#conn-text").textContent = ok ? "Live" : "Offline, retrying";
+/** Header indicator: "Live", "Offers stopped" (background service down), or "Offline, retrying". */
+function setConn(state) {
+  if (connState === state) return;
+  connState = state;
+  $("#conn").className = `conn ${state === "live" ? "is-live" : "is-bad"}`;
+  $("#conn-text").textContent = { live: "Live", stopped: "Offers stopped", stale: "Out of date", offline: "Offline, retrying" }[state];
 }
 
 function renderAll(data) {
-  updateAttention(data.openings);
+  updateAttention();
   renderSummary(data);
   renderOpenings(data);
   renderWaitlist(data);
 }
 
-async function refresh() {
-  if (busy) return;
+// ---------------------------------------------------------------------------
+// System status: is the background service running, and can we reach the system at all?
+// Persistent banners (not dismissible) under the Demo strip; the Live/Offline dot stays as a secondary cue.
+// ---------------------------------------------------------------------------
+const SYSTEM_STOPPED_FALLBACK =
+  "Automatic offers have STOPPED — the background service isn't running. Nothing is being sent or timed out until it's back.";
+const OUTAGE_ADVICE_FALLBACK =
+  "Clients who try to reply now are asked to try again or call. If an opening is urgent, text or call clients yourself.";
+function leadSentence(text) {
+  const [lead, ...rest] = String(text).split(" — ");
+  return `<strong>${esc(lead)}</strong>${rest.length ? ` — ${esc(rest.join(" — "))}` : ""}`;
+}
+const banner = (tone, icon, body, extra = "") =>
+  `<div class="sys-banner sys-banner--${tone}">${ICONS[icon]}<div class="sys-banner-body">${body}</div>${extra}</div>`;
+
+function renderSystem(system) {
+  let alertHtml = "";
+  let statusHtml = "";
+  if (unreachable) {
+    const when = lastOkAt ? ` (last updated ${formatClock(lastOkAt)})` : "";
+    alertHtml = banner(
+      "danger",
+      "warn",
+      `<p><strong>Can't reach the system</strong> — what you see may be out of date${esc(when)}.</p>
+        <p class="sys-banner-meta">Don't assume automatic offers are running: this page can't check right now. It keeps retrying every few seconds.${unreachable.message ? ` <span class="nw">Error:</span> ${esc(unreachable.message)}` : ""}</p>`,
+    );
+  } else if (system && !system.workerOk) {
+    const seen = system.lastSeenAt ? `Last seen working at ${formatClock(system.lastSeenAt - serverOffset)}.` : "Not seen working since the dashboard started.";
+    const sent = system.alerts?.some((x) => x.kind === "worker_down" && x.at >= (system.outage?.detectedAt ?? 0))
+      ? " Lena and Carla were sent a simulated alert."
+      : "";
+    alertHtml = banner(
+      "danger",
+      "warn",
+      `<p>${leadSentence(system.message ?? SYSTEM_STOPPED_FALLBACK)}</p>
+        <p>${esc(system.advice ?? OUTAGE_ADVICE_FALLBACK)}</p>
+        <p class="sys-banner-meta">${esc(seen)}${esc(sent)}</p>`,
+    );
+  } else if (system?.readError) {
+    const when = system.lastReadAt ? ` (last read ${formatClock(system.lastReadAt - serverOffset)})` : "";
+    alertHtml = banner(
+      "warn",
+      "warn",
+      `<p><strong>Can't read the latest from Temporal</strong> — what you see may be out of date${esc(when)}.</p>
+        <p class="sys-banner-meta">Don't assume automatic offers are running until this clears. Checking again every few seconds.</p>`,
+    );
+  } else if (system?.outage?.endedAt && system.outage.startedAt !== dismissedRecovery && now() - system.outage.endedAt < 15 * 60_000) {
+    const from = formatClock(system.outage.startedAt - serverOffset);
+    const to = formatClock(system.outage.endedAt - serverOffset);
+    const span = from === to ? `was down briefly at ${from}` : `was down from ${from} to ${to}`;
+    statusHtml = banner(
+      "ok",
+      "check",
+      `<p><strong>Automatic offers are running again.</strong> The background service ${esc(span)}. Openings carried on where they left off; any reply time or hold that ended meanwhile has now closed.</p>`,
+      `<button type="button" class="btn btn-quiet btn-sm" data-action="dismiss-recovery" data-outage="${system.outage.startedAt}">Close<span class="sr-only"> notice</span></button>`,
+    );
+  }
+  patch($("#system-alert"), alertHtml);
+  patch($("#system-status"), statusHtml);
+  document.body.classList.toggle("system-down", Boolean(alertHtml));
+  // Technical details for whoever fixes it (not announced; updated quietly).
+  const problems =
+    !unreachable && system && !system.workerOk
+      ? [
+          ...(system.problems ?? []),
+          system.temporalUnreachable
+            ? "To fix it, start Temporal again: npm run start:temporal (Docker must be running)."
+            : "To fix it, start the Worker again: npm run dev restarts it automatically, or run npm run dev:worker.",
+        ]
+      : [];
+  const notes = [...problems, ...(!unreachable ? (system?.warnings ?? []) : [])];
+  if (!unreachable && system?.workers?.length) notes.push(`Workers polling now: ${system.workers.join(", ")}.`);
+  $("#system-tech").hidden = !problems.length && !(system?.warnings ?? []).length;
+  patch($("#system-problems"), notes.map((p) => `<li>${esc(p)}</li>`).join(""));
+  renderSystemAlerts(system);
+}
+function renderSystemAlerts(system) {
+  const alerts = system?.alerts ?? [];
+  $("#sys-alerts").hidden = !alerts.length;
+  patch(
+    $("#sys-alerts-list"),
+    alerts
+      .map(
+        (a) => `<li><time datetime="${new Date(a.at).toISOString()}">${esc(formatClock(a.at - serverOffset))}</time>
+          <span>${chip("demo", "Simulated", "message")} Simulated text to ${esc(a.to.join(" and "))}: “${esc(a.text)}”</span></li>`,
+      )
+      .join(""),
+  );
+}
+
+let refreshPromise = null;
+/**
+ * Poll the dashboard. Never blocked by a staff action in progress (the outage banner must keep updating);
+ * while an action is saving, only the system parts re-render, so the busy button stays put.
+ * One request at a time, with a time limit: a hung server counts as "can't reach". The timer's polls
+ * skip a tick while one is in flight; after an action (force) it waits for that one, then reads again.
+ */
+async function refresh(force = false) {
+  if (refreshPromise) {
+    if (!force) return refreshPromise;
+    await refreshPromise.catch(() => {});
+  }
+  refreshPromise = readDashboard().finally(() => (refreshPromise = null));
+  return refreshPromise;
+}
+async function readDashboard() {
   try {
     const data = await api("/api/dashboard");
-    serverOffset = data.now - Date.now();
+    // Only follow real clock differences, not request latency (so times near a minute boundary don't flicker).
+    const offset = data.now - Date.now();
+    if (lastOkAt === null || Math.abs(offset - serverOffset) > 2_000) serverOffset = offset;
     lastData = data;
-    renderAll(data);
-    setConn(true);
+    unreachable = null;
+    lastOkAt = Date.now();
+    if (busy) updateAttention();
+    else renderAll(data);
+    renderSystem(data.system);
+    setConn(!data.system?.workerOk ? "stopped" : data.system?.readError ? "stale" : "live");
     $("#updated").textContent = `Updated ${formatClock(Date.now())}`;
-  } catch {
-    setConn(false);
+  } catch (error) {
+    // Network error, a hung API (timeout), or the API failed.
+    const first = !unreachable;
+    unreachable = { message: error instanceof TypeError ? "" : error.message, since: unreachable?.since ?? Date.now() };
+    renderSystem(lastData?.system);
+    setConn("offline");
+    updateAttention();
+    // Cards stop stating live facts (status lines say Unknown, countdowns stop).
+    if (first && lastData && !busy) renderOpenings(lastData);
   }
 }
 
@@ -1591,8 +1879,15 @@ async function staffAction(id, action, body, button, busyLabel = "Saving…") {
     busy = false;
     inFlight.delete(id);
     cardCache.delete(id);
-    await refresh();
+    await refresh(true);
   }
+}
+
+/** While the background service is down nothing can be saved: say so before any confirm dialog. */
+function refuseWhileStopped() {
+  if (!lastData?.system || lastData.system.workerOk || unreachable) return false;
+  toast("The background service isn't running, so this can't be saved right now. Nothing was changed. Try again when automatic offers are running again.", true);
+  return true;
 }
 
 const findState = (id) => lastData?.openings.find((o) => o.workflowId === id)?.state;
@@ -1603,7 +1898,8 @@ const findState = (id) => lastData?.openings.find((o) => o.workflowId === id)?.s
  */
 async function approveOutcome(id, fallback) {
   for (let i = 0; i < 12; i++) {
-    const s = await api(`/api/openings/${encodeURIComponent(id)}`).then((r) => r.state).catch(() => null);
+    const s = await api(`/api/openings/${encodeURIComponent(id)}`).then((r) => r.state).catch(() => undefined);
+    if (s === undefined) return fallback; // no answer: don't keep the page waiting
     if (s?.status === "offering" && s.scheduled) return `${fallback} ${s.scheduled.text}.`;
     if (s?.status === "offering" && s.currentRound?.sentAt) {
       const names = s.offers.filter((o) => s.currentRound.offerIds.includes(o.offerId)).map((o) => o.name);
@@ -1621,9 +1917,15 @@ function confirmCopy(kind, id, offerId) {
   const w = s?.winner;
   const first = firstName(w?.name) || "the client";
   if (kind === "cancel") {
+    const live = s?.offers.some((o) => o.status === "live") || (s?.status === "filled" && w);
+    const unsent = s?.offers.some((o) => o.status === "sending");
     return {
       title: "Cancel this opening?",
-      body: `Anyone holding an offer${s?.status === "filled" && w ? ` (including ${first}’s hold)` : ""} is told it’s no longer available.`,
+      body: live
+        ? `Anyone holding an offer${s?.status === "filled" && w ? ` (including ${first}’s hold)` : ""} is told it’s no longer available.`
+        : unsent
+          ? "The offer texts haven’t gone out yet, so nobody needs to be told. Sending stops."
+          : "Nobody has an offer out, so nobody is texted.",
       actionLabel: "Cancel opening",
       safeLabel: "Keep it",
       variant: "danger",
@@ -1676,6 +1978,11 @@ document.addEventListener("click", async (event) => {
     case "alerts":
       enableAlerts();
       break;
+    case "dismiss-recovery":
+      dismissedRecovery = Number(el.dataset.outage);
+      renderSystem(lastData?.system);
+      $("#main").focus();
+      break;
     case "close-alert":
       closeAlert();
       $("#main").focus();
@@ -1718,8 +2025,13 @@ document.addEventListener("click", async (event) => {
       document.getElementById(`det-${id}`).hidden = !open;
       break;
     }
+    case "ack-stop":
+      if (el.getAttribute("aria-busy") === "true") return;
+      staffAction(id, "acknowledge-stop", {}, el, "Saving…");
+      break;
     case "approve": {
       if (el.getAttribute("aria-busy") === "true") return;
+      if (refuseWhileStopped()) return;
       const sel = selections.get(id) ?? new Set();
       if (!sel.size) {
         el.closest(".panel")?.querySelector(".inline-error")?.removeAttribute("hidden");
@@ -1734,6 +2046,7 @@ document.addEventListener("click", async (event) => {
     }
     case "ask": {
       if (el.getAttribute("aria-busy") === "true") return;
+      if (refuseWhileStopped()) return;
       const kind = el.dataset.confirm;
       const { ok, reason } = await openConfirm(confirmCopy(kind, id));
       if (!ok) return;
@@ -1742,17 +2055,21 @@ document.addEventListener("click", async (event) => {
       break;
     }
     case "late-book":
+      if (refuseWhileStopped()) return;
       staffAction(id, "late-yes", { offerId: el.dataset.offer, action: "book" }, el);
       break;
     case "late-dismiss": {
+      if (refuseWhileStopped()) return;
       const { ok } = await openConfirm(confirmCopy("late-dismiss", id, el.dataset.offer));
       if (ok) staffAction(id, "late-yes", { offerId: el.dataset.offer, action: "dismiss" }, el.isConnected ? el : null);
       break;
     }
     case "keep-trying":
+      if (refuseWhileStopped()) return;
       staffAction(id, "keep-trying", {}, el);
       break;
     case "leave-open":
+      if (refuseWhileStopped()) return;
       staffAction(id, "leave-open", {}, el);
       break;
   }
@@ -1807,5 +2124,5 @@ setupForm()
   .catch((error) => toast(error.message, true, "Couldn't load:"))
   .finally(() => {
     refresh();
-    setInterval(refresh, 2000);
+    setInterval(() => refresh(), 2000);
   });

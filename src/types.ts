@@ -128,6 +128,8 @@ export type OpeningInput = {
   stopOfferingMinutesBefore?: number;
   fastDemo: boolean;
   simulateTextFailure: boolean;
+  /** Demo: every text attempt fails, so the send keeps retrying (until Cancel, or the round runs out of time). */
+  simulateTextsKeepFailing?: boolean;
   createdBy?: string;
 };
 
@@ -155,7 +157,8 @@ export type OfferStatus =
   | "timed_out" // no reply before their own deadline
   | "told_filled" // someone else said yes first
   | "told_cancelled" // staff cancelled the opening
-  | "released"; // this client's yes was held, then released (staff couldn't confirm / auto-release)
+  | "released" // this client's yes was held, then released (staff couldn't confirm / auto-release)
+  | "not_sent"; // the opening was cancelled before this offer's text went out (nobody is told)
 
 export type LateReply = "already_taken" | "expired" | "no_longer_available";
 

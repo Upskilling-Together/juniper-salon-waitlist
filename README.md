@@ -21,6 +21,8 @@ npm run dev
 - Staff dashboard: <http://localhost:3000>
 - Temporal Web UI: <http://localhost:8233> (each opening also has a **View workflow in Temporal** link)
 
+`npm run dev` runs the API and the **Worker** (the "background service" that runs automatic offers). If the Worker stops, the dashboard stays up and says so, the console prints a clear **THE WORKER STOPPED** box, and the Worker is restarted automatically after 2, 5, 10, then 30 seconds. Ctrl+C stops everything (press it twice to stop straight away); the Worker is stopped with its whole process group, so no stray Worker is left polling. To run them separately (for example, to stop the Worker on purpose), use `npm run start:temporal`, then `npm run dev:api` and `npm run dev:worker` in two terminals.
+
 Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Temporal's data is kept in a Docker volume. To start over with a fresh waitlist, run `docker compose down -v`. (A waitlist saved by an earlier version is upgraded in place: the old "opted out" flag becomes a texting answer, anyone without a recorded answer becomes **Not asked yet**, and Highlights / Trim become Color / Haircut. Openings started by an earlier version can't be shown; start fresh to see the new rules end to end.)
 
 ## Try it
@@ -49,6 +51,15 @@ More to try:
 
 Two other options: **Simulate first text attempt failing** shows a failed send being retried in the workflow's Event History, and **Turn on alerts** shows browser notifications when something needs staff.
 
+**Is it still running?** Every opening card has one plain line that answers this, with an icon and words (never colour alone): **Automatic offers: running — waiting for replies until 1:02 PM**, **Scheduled — texts go out at 9:00 AM (outside texting hours)**, **Waiting for you — approve who gets texted**, **Stopped — nobody took it. Nothing more will happen until you choose.**, **Finished — confirmed in Square**, and so on. **Paused** is kept for outages only, and **Unknown** means the page couldn't get an answer, so it won't claim the opening is running. To see what happens when something fails:
+- **The background service stops.** Run `npm run dev:api` and `npm run dev:worker` in two terminals, then press Ctrl+C in the Worker's terminal. Within about 10–15 seconds a red banner at the top of the page says **Automatic offers have STOPPED — the background service isn't running. Nothing is being sent or timed out until it's back.**, what that means for clients and what staff can do meanwhile, and when it was last seen working. It can't be closed. The header indicator changes from **Live** to **Offers stopped**, the tab title starts with **STOPPED –**, and (with alerts on) one browser notification fires. Running openings read **Paused — background service not running (see the banner at the top)**, and their countdowns say **(paused — closes when the background service is back)**. Openings waiting for approval, or already stopped, keep their own line with **(can't be changed until the background service is back)**. Buttons that would save something say so straight away instead of opening a confirm dialog. Once the outage has lasted 30 seconds, Lena and Carla get one simulated alert, listed under **System alerts**. Start the Worker again: after two good checks a green **Automatic offers are running again** notice appears, and every opening carries on where it left off. (With `npm run dev` the Worker restarts itself, so the banner only shows while it's down.)
+- **Temporal itself stops** (`npm run stop`). The page first says **Can't read the latest from Temporal — what you see may be out of date**, then, once confirmed, **Automatic offers have STOPPED — the dashboard can't reach Temporal, the system that runs them.** Cards show the last state read, marked with when it was read.
+- **Texts keep failing.** In **Add opening → Demo tools**, tick **Simulate texts failing (keeps retrying)**, and approve. After the third attempt (about 6 seconds) the card moves to **Needs you** with a **Texts not sending** chip and reads **Texts aren't going out — nobody in this round has been texted yet. It keeps retrying (failed 2 times so far). Text them yourself or cancel the opening.** The last error is shown underneath in smaller type, and each person reads **Not sent yet — retrying**. **Cancel opening** stops the retries; nobody had received the offer, so nobody is sent a "no longer available" text. Other steps an opening waits on (matching, texting hours, reserving people, marking someone booked) get the same warning in their own words if they keep failing.
+- **An opening's workflow ends unexpectedly.** Terminate one in Temporal, for example `docker compose exec -T temporal temporal workflow terminate -w <opening-id> --reason test`. Its card moves to **Needs you**: **Stopped unexpectedly — automatic offers are no longer running for this opening. Check it in Temporal and contact clients yourself if needed.**, with the people who may be waiting to hear back and a **View workflow in Temporal** link. **Mark as handled** moves it to **Finished** (the dashboard remembers this until the API restarts); it also moves there by itself once its appointment time has passed.
+- **The page can't reach the system.** Stop (or freeze) the API with the page open. Within about 10 seconds a banner says **Can't reach the system — what you see may be out of date (last updated 12:03 PM)**, the header reads **Offline, retrying**, the tab title starts with **Offline –**, and each card's line becomes **Unknown — can't reach the system, so this may have changed**.
+
+If more than one Worker is polling `juniper-salon` (for example a forgotten copy of the app), **Technical details** under the banner area warns about it: while it polls, this page can't tell when the other one stops.
+
 ## What Lena told us, and what the prototype does
 
 | Lena said | Prototype |
@@ -76,6 +87,7 @@ Two other options: **Simulate first text attempt failing** shows a failed send b
 | Simulated texts must be clearly labelled during the demo, so nobody mistakes them for real messages. | Every page has a **Demo** banner, and each message appears in a dashed bubble marked **Simulated text — not sent**. The history and Worker logs say "simulated" too. |
 | She wants it warm and calm, not like a technical dashboard, with soft, welcoming colors. Later direction: professional, simple, and accessible to everyone. | A plain, professional booking-software look: a warm off-white background, white cards, one sage green for main actions, and plain words ("Open chairs", "Needs your OK", "Needs you"). Colors, focus outlines and keyboard use follow WCAG 2.2 AA. |
 | Lena and Carla are usually with clients when a cancellation comes in. Alerts should go to both of them for now. | Simulated alert texts to **both Lena and Carla** (the history reads "Simulated text to Lena and Carla: …"), a "needs you" count in the tab title and header, optional browser alerts, and a phone-friendly layout. |
+| "I'd want to know clearly when the automatic process stops or fails, so Carla and I don't assume it's still running." | Every opening card has one status line (icon plus words): **running**, **scheduled** (texting hours), **paused** (only during an outage), **waiting for you**, **stopped**, **finished**, or **unknown** (no answer, so it doesn't claim anything). The API checks every 5 seconds whether a Worker is polling the `juniper-salon` task queue (Temporal's DescribeTaskQueue, measured on the API's own clock, plus a quick query only a Worker can answer); two failed checks in a row mean down, two good ones mean back. If it's down, or Temporal can't be reached, a persistent banner says **Automatic offers have STOPPED**, the header says **Offers stopped**, the tab title starts with **STOPPED –**, running openings say **Paused**, countdowns stop, and Lena and Carla get one simulated alert per outage (listed under **System alerts**). A step that keeps failing (texts, or any step the opening waits on, attempt 3 or later) and workflows that ended unexpectedly (failed, terminated, timed out) go to **Needs you** with a plain warning and what to do. If the page can't reach the system, or the API doesn't answer within 8 seconds, it says so and shows how old the information is. `npm run dev` keeps the dashboard up when the Worker stops and restarts the Worker with backoff. |
 | Success means refilling at least half of last-minute cancellations (within 48 hours of the appointment), up from about 3 in 10. | A refill-rate meter compared against the ~30% baseline and the 50% goal. It counts only **last-minute** openings (starting within 48 hours of being added, marked **Last-minute (within 48 h)** on the card). Openings further ahead are shown separately. A chair counts as refilled only once it's confirmed in Square, and the meter is labelled as prototype data. |
 
 ## How Temporal is used
@@ -97,7 +109,7 @@ npm run typecheck
 npm test
 ```
 
-There are 71 tests: Workflow tests run in Temporal's time-skipping test environment with mocked Activities, plus unit tests for matching and texting hours. They cover:
+There are 95 tests: Workflow tests run in Temporal's time-skipping test environment with mocked Activities, plus unit tests for matching and texting hours. They cover:
 - nothing is sent before approval;
 - two simultaneous yeses produce one winner;
 - a late yes after a fill;
@@ -116,7 +128,9 @@ There are 71 tests: Workflow tests run in Temporal's time-skipping test environm
 - holds, their release, and the automatic release;
 - a late yes is flagged for staff;
 - the waitlist never books one client twice;
-- matching on stylist rules (all five stylists), services, availability notes and join order.
+- matching on stylist rules (all five stylists), services, availability notes and join order;
+- the "is it still running?" status line for every state (running, scheduled, paused, waiting for you, stopped, finished, unknown, texts or another step failing, stopped unexpectedly and marked handled), Worker health from DescribeTaskQueue responses (fresh, stale and missing pollers, clock skew, more than one Worker, failed checks, Temporal unreachable after two failed checks), spotting a step stuck on attempt 3 or later, and telling "no answer in time" (the SDK's real ServiceError with a DEADLINE_EXCEEDED, UNAVAILABLE or "no poller seen" cause) apart from a real failure;
+- texts that keep failing: the send is retried, shows as failing after attempt 3, and **Cancel opening** stops the retries with nothing sent and nobody told.
 
 The flow was also checked live against the Docker Temporal server. Screenshots are in [`evidence/`](evidence/).
 
@@ -125,6 +139,7 @@ The flow was also checked live against the Docker Temporal server. Screenshots a
 - **No real texts are sent.** Texts are logged by an Activity and shown on screen marked **Simulated text — not sent**. **Preview client's text** stands in for the text link. A pilot would need an SMS provider sending from the salon number, plus opt-out handling on that provider (for example, a reply of STOP should record **Opted out**).
 - **No Google Sheets or Square connection.** The waitlist is sample data, and Square stays manual, as Lena asked.
 - **To confirm with Lena:** the three sample stylist names and the default lengths for each service.
+- **Outage alerts are simulated and come from the API.** If the API itself is down, nobody is texted; a real setup would watch the Worker from outside (for example a Temporal Cloud alert or an uptime check). The Worker check can take up to about 15 seconds to notice a stopped Worker. **Mark as handled** is remembered by the API process only, so a restarted API lists an unexpected stop again.
 - **Local only.** There is no staff login, and the offer links are local. Real use needs authentication and secure public offer links.
 - **Refill rate is illustrative.** It reflects only the openings in this prototype and doesn't prove the 50% goal.
 

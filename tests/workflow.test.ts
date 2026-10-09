@@ -4,6 +4,7 @@ import { ApplicationFailure, WorkflowUpdateFailedError, type WorkflowHandle } fr
 import { MockActivityEnvironment, TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import type * as realActivities from "../src/activities";
+import { automationStatus, textFailureFromPending } from "../src/automation";
 import { computeSuggestions } from "../src/matching";
 import {
   addClient,
@@ -112,7 +113,8 @@ const mockActivities: typeof realActivities = {
   async textingWindow(input) {
     return computeTextingWindow(input, clockFor(input.openingId, input.nowMs));
   },
-  async sendOfferTexts({ opening, offers, replyWindowSeconds }) {
+  async sendOfferTexts({ opening, offers, replyWindowSeconds, keepFailing }) {
+    if (keepFailing) throw ApplicationFailure.retryable("Simulated SMS gateway outage", "SimulatedSmsOutage");
     if (gates.send) await gates.send;
     if (sendTooLate.on) {
       sendTooLate.on = false; // one-shot
@@ -1061,6 +1063,54 @@ describe("waitlistWorkflow: consent, Add to waitlist, Remove from waitlist", () 
   });
 });
 
+describe("texts that keep failing (Lena: know when the automatic process fails)", () => {
+  test("the send is retried, attempt ≥ 3 shows as 'Texts aren't going out', and Cancel stops the retries", async () => {
+    const { handle, openingId } = await startOpening({ simulateTextsKeepFailing: true });
+    await waitFor(handle, (x) => x.status === "awaiting_approval", "awaiting approval");
+    await handle.executeUpdate(approveMatches, { args: [{ clientIds: ["c01", "c04"] }] });
+
+    // Retries back off 2 s, 4 s, … so attempt 3 is pending after about 6 s.
+    let failure: ReturnType<typeof textFailureFromPending>;
+    const deadline = Date.now() + 20_000;
+    while (!failure && Date.now() < deadline) {
+      failure = textFailureFromPending((await handle.describe()).raw.pendingActivities);
+      if (!failure) await new Promise((r) => setTimeout(r, 250));
+    }
+    assert.ok(failure, "pending sendOfferTexts reached attempt 3");
+    assert.ok(failure.attempt >= 3);
+    assert.match(failure.lastError ?? "", /Simulated SMS gateway outage/);
+
+    const s = await handle.query(getOpening);
+    assert.ok(s.offers.every((o) => o.status === "sending"), "nobody is shown as texted while the send keeps failing");
+    const line = automationStatus({ state: s, executionStatus: "RUNNING", workerOk: true, textFailure: failure, formatTime: String });
+    assert.equal(line.kind, "texts_failing");
+    assert.match(line.text, /^Texts aren't going out — nobody in this round has been texted yet\. It keeps retrying \(failed \d+ times so far\)/);
+    assert.match(line.technical ?? "", /^Last error: Simulated SMS gateway outage\.$/);
+
+    const cancelled = await handle.executeUpdate(cancelOpening, { args: [{ reason: "texts failing" }] });
+    assert.match(cancelled.message, /hadn't gone out, so nobody was told/);
+    const final = await handle.result();
+    assert.equal(final.status, "cancelled");
+    assert.ok(final.history.some((h) => h.kind === "send_stopped"), "the retrying send was stopped");
+    assert.equal(sentFor(openingId).length, 0, "nothing was ever sent");
+    assert.equal(
+      recorded.cancelledNotices.filter((x) => x.openingId === openingId).length,
+      0,
+      "nobody is told 'no longer available' about an offer they never received",
+    );
+    assert.ok(final.offers.every((o) => o.status === "not_sent"));
+    assert.deepEqual(
+      releasedReservations.filter((r) => r.openingId === openingId).map((r) => r.clientId).sort(),
+      ["c01", "c04"],
+      "their waitlist reservations are released",
+    );
+    assert.ok(!final.history.some((h) => h.kind === "told_cancelled"));
+    const after = await handle.describe();
+    assert.equal(after.raw.pendingActivities?.length ?? 0, 0, "no Activity is still retrying");
+    assert.equal(after.status.name, "COMPLETED");
+  });
+});
+
 describe("sendOfferTexts activity (simulated SMS)", () => {
   before(() => {
     // The consent re-check reads the waitlist; give it the sample sheet instead of a Temporal server.
@@ -1087,6 +1137,16 @@ describe("sendOfferTexts activity (simulated SMS)", () => {
     assert.match(ok.texts[offer.offerId], /late replies aren't guaranteed/);
     assert.match(ok.texts[offer.offerId], /Reply within 15 min/);
     assert.equal(typeof ok.deliveredAt, "number");
+  });
+
+  test("'Simulate texts failing (keeps retrying)' fails every attempt and sends nothing", async () => {
+    const { sendOfferTexts } = await import("../src/activities");
+    for (const attempt of [1, 2, 7]) {
+      await assert.rejects(
+        new MockActivityEnvironment({ attempt }).run(sendOfferTexts, { opening, offers: [offer], simulateFailure: false, keepFailing: true }),
+        (error: unknown) => error instanceof ApplicationFailure && !error.nonRetryable && /gateway outage/.test(error.message),
+      );
+    }
   });
 
   test("the text states the round's actual (capped) reply window", async () => {
@@ -1143,7 +1203,9 @@ describe("slow SMS gateway", () => {
       await handle.executeUpdate(cancelOpening, { args: [{ reason: "stylist sick" }] });
       const final = await handle.result(); // completes without waiting for the stuck SMS gateway
       assert.equal(final.status, "cancelled");
-      assert.ok(final.offers.every((o) => o.status === "told_cancelled" && o.deadline === undefined));
+      // The text never went out, so the client isn't sent a "no longer available" notice either.
+      assert.ok(final.offers.every((o) => o.status === "not_sent" && o.deadline === undefined));
+      assert.equal(recorded.cancelledNotices.filter((x) => x.openingId === openingId).length, 0);
       assert.ok(final.history.some((h) => h.kind === "send_stopped"));
       assert.equal(sentFor(openingId).length, 0);
     } finally {

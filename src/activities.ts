@@ -101,11 +101,16 @@ export async function textingWindow(input: {
   return computeTextingWindow(input);
 }
 
-/** SIMULATED SMS — just logs. Optionally fails the first attempt so the retry shows up in Event History. */
+/**
+ * SIMULATED SMS — just logs. Demo options: fail the first attempt (the retry shows up in Event History),
+ * or fail every attempt (Temporal keeps retrying; the dashboard warns staff and Cancel stops it).
+ */
 export async function sendOfferTexts(input: {
   opening: OpeningInput;
   offers: OfferText[];
   simulateFailure: boolean;
+  /** Demo: fail every attempt ("Simulate texts failing (keeps retrying)"). */
+  keepFailing?: boolean;
   /** This round's actual reply window (shorter than the opening's when capped by the start-time cutoff). */
   replyWindowSeconds?: number;
   /**
@@ -117,6 +122,10 @@ export async function sendOfferTexts(input: {
   const { attempt } = Context.current().info;
   if (input.notAfter !== undefined && Date.now() > input.notAfter) {
     throw ApplicationFailure.nonRetryable("Too late to send these offer texts — nothing was sent.", "SendTooLate");
+  }
+  if (input.keepFailing) {
+    log.warn(`Simulated SMS gateway outage on attempt ${attempt} — nothing was sent; Temporal will retry.`);
+    throw ApplicationFailure.retryable("Simulated SMS gateway outage — the text provider isn't accepting messages", "SimulatedSmsOutage");
   }
   if (input.simulateFailure && attempt === 1) {
     throw ApplicationFailure.retryable("Simulated SMS gateway hiccup on the first attempt", "SimulatedSmsFailure");

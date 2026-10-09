@@ -23,7 +23,7 @@
         </div>
         <div class="appbar-actions">
           <a class="chip chip--warn needs-link" id="attention" href="#needs-you" hidden></a>
-          <span class="conn is-pending" id="conn" role="status"><span class="conn-dot" aria-hidden="true"></span><span id="conn-text">Connecting…</span></span>
+          <span class="conn is-pending" id="conn"><span class="conn-dot" aria-hidden="true"></span><span id="conn-text">Connecting…</span></span>
           <button type="button" class="btn btn-quiet" id="alerts-btn" data-action="alerts" hidden>
             <svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" /><path d="M10 20.5a2 2 0 0 0 4 0" /></svg>
             Turn on alerts
@@ -41,6 +41,18 @@
         <span class="demo-pill">Demo</span>
         <p><strong>Every text here is simulated. Nothing is sent to real phones.</strong> <span class="demo-more">Use “Preview client’s text” to act as the client.</span></p>
       </div>
+    </section>
+
+    <!-- System status: persistent, not dismissible while there's a problem (the header indicator is secondary).
+         The live regions are always rendered (never hidden), so their first message is announced. -->
+    <section class="system-region" aria-labelledby="sys-h">
+      <h2 class="sr-only" id="sys-h">System status</h2>
+      <div id="system-alert" role="alert"></div>
+      <div id="system-status" role="status"></div>
+      <details class="sys-tech" id="system-tech" hidden>
+        <summary>Technical details</summary>
+        <ul id="system-problems"></ul>
+      </details>
     </section>
 
     <main id="main" tabindex="-1">
@@ -119,11 +131,18 @@
           </div>
           <p class="wl-source"><span class="chip chip--neutral">Sample data</span> <span>Imported from the salon's Google Sheet. Fictional clients and 555 numbers. Notes are shown exactly as staff wrote them. <span id="wl-sample-stylists">Sam, Jules and Nico are sample stylist names (confirm with Lena).</span></span></p>
           <p class="wl-consent" id="wl-consent"></p>
+          <p class="wl-consent wl-stale" id="wl-stale" hidden></p>
           <ul class="clients" id="waitlist"></ul>
         </aside>
       </div>
 
       <div class="refill" id="refill" role="group" aria-labelledby="refill-h"></div>
+
+      <section class="sys-alerts" id="sys-alerts" aria-labelledby="sys-alerts-h" hidden>
+        <h2 id="sys-alerts-h">System alerts</h2>
+        <p class="meta">When the background service stops or comes back, Lena and Carla get a text. In this demo the texts are simulated: nothing is sent.</p>
+        <ol class="timeline" id="sys-alerts-list"></ol>
+      </section>
 
       <footer class="page-foot">
         <span>Technical details:</span>
@@ -224,6 +243,10 @@
             <label class="check">
               <input type="checkbox" name="simulateTextFailure" aria-describedby="f-fail-hint" />
               <span>Simulate first text attempt failing <span class="hint" id="f-fail-hint">Shows Temporal retrying the text in the Event History.</span></span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="simulateTextsKeepFailing" aria-describedby="f-keepfail-hint" />
+              <span>Simulate texts failing (keeps retrying) <span class="hint" id="f-keepfail-hint">Every attempt fails, so the card warns that texts aren't going out. Cancel opening stops it.</span></span>
             </label>
           </details>
         </div>

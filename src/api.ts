@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { ApplicationFailure, WorkflowNotFoundError, WorkflowUpdateFailedError } from "@temporalio/client";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { automationStatus, isTransientTemporalError, textFailureFromPending, type TextFailure } from "./automation";
 import { describeStylistRule, notTextableReason } from "./matching";
 import {
   addClient,
@@ -46,7 +47,17 @@ import {
   type RespondResult,
   type Service,
   type Stylist,
+  type WaitlistState,
 } from "./types";
+import {
+  checkWorkerHealth,
+  currentHealth,
+  knownHealth,
+  probeFailing,
+  startHealthMonitor,
+  temporalMaybeUnreachable,
+  type SystemHealth,
+} from "./systemHealth";
 import { checkAddClientInput } from "./waitlistInput";
 import type { openingWorkflow } from "./workflows";
 
@@ -66,6 +77,46 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * Staff and client actions are Temporal Updates, which only a running Worker can accept. When the
+ * background service is known to be down, say so straight away instead of leaving the button spinning.
+ */
+const WORKER_DOWN_ACTION_MESSAGE =
+  "The background service isn't running, so this can't be saved right now. Nothing was changed. Try again when automatic offers are running again.";
+function requireWorker(message = WORKER_DOWN_ACTION_MESSAGE): void {
+  if (!knownHealth().workerOk) throw new HttpError(503, message);
+}
+
+/** How long a staff or client action waits for the background service before saying so. */
+const UPDATE_DEADLINE_MS = 8_000;
+const QUERY_DEADLINE_MS = 5_000;
+/** The dashboard is polled every 2 s and the page gives up after 8 s: one slow opening mustn't hold it up. */
+const DASHBOARD_QUERY_DEADLINE_MS = 3_000;
+const NO_ANSWER_ACTION_MESSAGE =
+  "The background service didn't answer in time, so this may not have been saved. Check the opening before trying again.";
+
+/**
+ * Run a Temporal Update (or several calls) with a deadline. If nothing answers in time, re-check the
+ * background service (so the banner updates) and answer 503 rather than leaving the button spinning.
+ */
+async function withUpdateDeadline<T>(run: () => Promise<T>, message = NO_ANSWER_ACTION_MESSAGE): Promise<T> {
+  const client = await getClient();
+  try {
+    return await client.connection.withDeadline(Date.now() + UPDATE_DEADLINE_MS, run);
+  } catch (error) {
+    if (isTransientTemporalError(error)) {
+      void checkWorkerHealth().catch(() => undefined);
+      throw new HttpError(503, message);
+    }
+    throw error;
+  }
+}
+
+/** Something changed: the next dashboard read must not reuse a cached one. */
+function invalidateDashboard() {
+  dashboardMemo = undefined;
 }
 
 /** Openings created by this process, merged into the list in case Visibility lags a moment. */
@@ -129,10 +180,15 @@ async function openingHandle(id: string) {
 
 async function queryOpening(id: string): Promise<OpeningState> {
   const handle = await openingHandle(id);
+  const client = await getClient();
   try {
-    return await handle.query(getOpening);
+    return await client.connection.withDeadline(Date.now() + QUERY_DEADLINE_MS, () => handle.query(getOpening));
   } catch (error) {
     if (error instanceof WorkflowNotFoundError) throw new HttpError(404, "Unknown opening.");
+    if (isTransientTemporalError(error)) {
+      void checkWorkerHealth().catch(() => undefined);
+      throw new HttpError(503, "The background service didn't answer in time, so this opening can't be read right now.");
+    }
     if (error instanceof Error && /nondeterminism/i.test(error.message)) {
       throw new HttpError(410, "This opening was made by an earlier version of the prototype and can't be shown here.");
     }
@@ -144,8 +200,11 @@ async function queryOpening(id: string): Promise<OpeningState> {
 function staffAction(run: (id: string, body: any) => Promise<{ ok: boolean; message: string }>) {
   return async (request: Request, response: Response) => {
     const id = String(request.params.id);
+    requireWorker();
+    invalidateDashboard();
     try {
-      const result = await run(id, request.body ?? {});
+      const result = await withUpdateDeadline(() => run(id, request.body ?? {}));
+      invalidateDashboard();
       response.json({ ...result, opening: await queryOpening(id).catch(() => undefined) });
     } catch (error) {
       const readable = readableUpdateError(error);
@@ -206,30 +265,162 @@ function isLastMinute(state: OpeningState | undefined, addedAt: Date): boolean |
   return state.opening.startsAtMs - added <= LAST_MINUTE_HOURS * 3600 * 1000;
 }
 
-function summarise(listing: OpeningListing) {
+/** Salon-local clock time ("1:02 PM"); this server runs in the salon's timezone. */
+function salonTime(ms: number): string {
+  const d = new Date(ms);
+  const h = d.getHours();
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** Last state read for each opening, shown (marked stale) while the background service can't answer queries. */
+const lastKnownState = new Map<string, { state: OpeningState; at: number }>();
+/** Last listing (who exists, and their Temporal status), shown while Temporal itself can't be reached. */
+let lastKnownListings: { listings: OpeningListing[]; at: number } | undefined;
+/** Same for the waitlist. */
+let lastKnownWaitlist: { value: WaitlistState; at: number } | undefined;
+/** First time each opening's query went unanswered in a row (for the "stuck while the Worker is fine" check). */
+const unansweredSince = new Map<string, number>();
+/** A running opening that hasn't answered for this long while the Worker is fine is treated as stuck. */
+const STUCK_AFTER_MS = 30_000;
+/** Unexpected stops staff marked as handled (kept in memory: a restarted API shows them again). */
+const handledStops = new Map<string, number>();
+
+function summarise(listing: OpeningListing & { textFailure?: TextFailure }, system: SystemHealth) {
+  const workerOk = system.workerOk;
   const s = listing.state;
   const key = s ? (s.status === "filled" && !s.square.done ? "filled_todo" : s.status) : "unknown";
+  const since = unansweredSince.get(listing.workflowId);
+  const stuck = Boolean(listing.transient && workerOk && listing.running && since !== undefined && Date.now() - since > STUCK_AFTER_MS);
+  const queryError = listing.error && (!listing.transient || stuck) ? listing.error : undefined;
   return {
     ...listing,
     temporalUrl: temporalLink(listing.workflowId),
     sortKey: STATUS_PRIORITY[key] ?? 9,
     lastMinute: isLastMinute(s, listing.startTime),
+    handledAt: handledStops.get(listing.workflowId),
+    /** "Is the automatic process still working on this?" — one plain line for the card. */
+    automation: automationStatus({
+      state: s,
+      executionStatus: listing.executionStatus,
+      queryError,
+      queryTransient: Boolean(listing.error && listing.transient && !stuck),
+      workerOk,
+      temporalUnreachable: system.temporalUnreachable,
+      textFailure: listing.textFailure,
+      handledAt: handledStops.get(listing.workflowId),
+      formatTime: salonTime,
+    }),
   };
 }
 
-app.get("/api/dashboard", async (_request, response) => {
+/** describe() results per opening for a moment, so several open tabs don't each ask every 2 s. */
+const describeCache = new Map<string, { at: number; failure?: TextFailure }>();
+
+/**
+ * Is a step this opening waits on being retried (pending Activity on attempt ≥ 3)? Texts first; also
+ * matching, texting hours, reservations and booking. Only checked for running openings that are working.
+ */
+async function stepFailureFor(listing: OpeningListing): Promise<TextFailure | undefined> {
+  const s = listing.state;
+  if (!listing.running || listing.stale || !s) return undefined;
+  const working = s.status === "finding_matches" || (s.status === "offering" && !s.scheduled) || (s.status === "filled" && !s.square.done);
+  if (!working) return undefined;
+  const cached = describeCache.get(listing.workflowId);
+  if (cached && Date.now() - cached.at < 3_000) return cached.failure;
   const client = await getClient();
-  const [listings, waitlist] = await Promise.all([
-    listOpenings(client, { extraIds: [...recentOpeningIds] }),
-    (async () => {
-      await ensureWaitlist(client);
-      return client.workflow.getHandle(WAITLIST_WORKFLOW_ID).query(getWaitlist);
-    })().catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) })),
+  const description = await client.connection.withDeadline(Date.now() + 4_000, () => client.workflow.getHandle(listing.workflowId).describe());
+  const failure = textFailureFromPending(description.raw.pendingActivities);
+  describeCache.set(listing.workflowId, { at: Date.now(), failure });
+  return failure;
+}
+
+/** One dashboard computation shared by every open tab for a moment (each tab polls every 2 s). */
+let dashboardMemo: { at: number; promise: Promise<unknown> } | undefined;
+const DASHBOARD_SHARE_MS = 1_000;
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const withTimeout = <T>(p: Promise<T>, ms: number, what: string) =>
+  Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what} (DEADLINE_EXCEEDED)`)), ms).unref())]);
+
+async function readWaitlist(canQuery: boolean): Promise<WaitlistState & { staleSince?: number }> {
+  try {
+    if (!canQuery) throw new Error("The background service isn't answering, so the waitlist can't be read right now.");
+    const client = await getClient();
+    const ask = () =>
+      client.connection.withDeadline(Date.now() + DASHBOARD_QUERY_DEADLINE_MS, () => client.workflow.getHandle(WAITLIST_WORKFLOW_ID).query(getWaitlist));
+    const value = await ask().catch(async (error) => {
+      if (!(error instanceof WorkflowNotFoundError)) throw error;
+      await client.connection.withDeadline(Date.now() + QUERY_DEADLINE_MS, () => ensureWaitlist(client));
+      return ask();
+    });
+    lastKnownWaitlist = { value, at: Date.now() };
+    return value;
+  } catch (error) {
+    // Show the last list we read (marked as such) rather than nothing.
+    if (lastKnownWaitlist) return { ...lastKnownWaitlist.value, staleSince: lastKnownWaitlist.at };
+    throw error;
+  }
+}
+
+/** Openings as last read, marked stale (Temporal can't be reached right now). */
+function lastKnownOpenings(): OpeningListing[] {
+  return (lastKnownListings?.listings ?? []).map((l) => {
+    const known = lastKnownState.get(l.workflowId);
+    return known
+      ? { ...l, state: known.state, error: undefined, transient: true, stale: true, staleSince: known.at }
+      : { ...l, error: "Can't reach Temporal right now.", transient: true, stale: true, staleSince: lastKnownListings?.at };
+  });
+}
+
+async function buildDashboard() {
+  const system: SystemHealth = await currentHealth();
+  const workerOk = system.workerOk;
+  /** Set when openings couldn't be read from Temporal this time (what's shown is the last read). */
+  let readError: string | undefined;
+  let listings: OpeningListing[] | undefined;
+  let waitlistRead: Promise<WaitlistState & { staleSince?: number }> | undefined;
+  // Queries need a Worker: while it's down, or the last quick check got no answer, don't wait for timeouts.
+  const canQuery = workerOk && !probeFailing();
+  if (system.temporalUnreachable || temporalMaybeUnreachable()) {
+    readError = "Can't reach Temporal right now.";
+  } else {
+    try {
+      const client = await withTimeout(getClient(), QUERY_DEADLINE_MS, "Connecting to Temporal");
+      waitlistRead = readWaitlist(canQuery);
+      waitlistRead.catch(() => undefined); // handled below
+      listings = await listOpenings(client, { extraIds: [...recentOpeningIds], skipQueries: !canQuery, queryDeadlineMs: DASHBOARD_QUERY_DEADLINE_MS });
+      lastKnownListings = { listings: listings.map(({ state: _s, error: _e, transient: _t, ...meta }) => meta), at: Date.now() };
+    } catch (error) {
+      readError = `Can't read openings from Temporal right now (${errorText(error).slice(0, 160)}).`;
+      // Probably Temporal itself: check now (without making this answer wait) so the banner says so once confirmed.
+      void checkWorkerHealth().catch(() => undefined);
+    }
+  }
+  if (!listings) listings = lastKnownOpenings();
+
+  const now = Date.now();
+  for (const l of listings) {
+    if (l.stale) continue;
+    if (l.state) {
+      recentOpeningIds.delete(l.workflowId);
+      unansweredSince.delete(l.workflowId);
+      lastKnownState.set(l.workflowId, { state: l.state, at: now });
+    } else if (l.error && l.transient) {
+      if (!unansweredSince.has(l.workflowId)) unansweredSince.set(l.workflowId, now);
+      // Can't read it right now (Worker down or slow): show the last state we saw, marked as stale.
+      const known = lastKnownState.get(l.workflowId);
+      if (known) Object.assign(l, { state: known.state, stale: true, staleSince: known.at });
+    }
+  }
+  const [failures, waitlist] = await Promise.all([
+    Promise.all(listings.map((l) => (workerOk && !readError ? stepFailureFor(l).catch(() => undefined) : undefined))),
+    (readError || !waitlistRead ? Promise.reject(new Error(readError)) : waitlistRead).catch((error: unknown) =>
+      lastKnownWaitlist ? { ...lastKnownWaitlist.value, staleSince: lastKnownWaitlist.at } : { error: errorText(error) },
+    ),
   ]);
-  for (const l of listings) if (l.state) recentOpeningIds.delete(l.workflowId);
 
   const openings = listings
-    .map(summarise)
+    .map((l, i) => summarise({ ...l, textFailure: failures[i] }, system))
     .sort((a, b) => a.sortKey - b.sortKey || b.startTime.getTime() - a.startTime.getTime());
 
   // Refill rate: confirmed (Square done) ÷ (confirmed + unfilled + left open), LAST-MINUTE openings only
@@ -237,8 +428,8 @@ app.get("/api/dashboard", async (_request, response) => {
   // ahead are counted separately. Cancelled and still-held openings are excluded: a hold can still be released.
   const counts = { filled: 0, held: 0, unfilled: 0, leftOpen: 0, cancelled: 0 };
   const later = { filled: 0, closed: 0 };
-  const holding = new Map<string, { openingId: string; deadline?: number; held?: boolean }>();
-  for (const o of listings) {
+  const holding = new Map<string, { openingId: string; deadline?: number; held?: boolean; notSent?: boolean; stopped?: boolean }>();
+  for (const o of openings) {
     if (!o.state) continue;
     const st = o.state.status;
     if (isLastMinute(o.state, o.startTime) === false) {
@@ -249,20 +440,24 @@ app.get("/api/dashboard", async (_request, response) => {
     else if (st === "unfilled") counts.unfilled++;
     else if (st === "left_open") counts.leftOpen++;
     else if (st === "cancelled") counts.cancelled++;
+    /** The opening no longer runs (stopped unexpectedly): its reservations aren't live offers any more. */
+    const stopped = o.automation.kind === "stopped_unexpectedly";
     for (const offer of o.state.offers) {
       if (offer.status === "live" || offer.status === "sending") {
-        holding.set(offer.clientId, { openingId: o.workflowId, deadline: offer.deadline });
+        holding.set(offer.clientId, { openingId: o.workflowId, deadline: offer.deadline, notSent: offer.status === "sending", stopped });
       }
     }
     const w = o.state.winner;
     if (o.state.status === "filled" && w && !o.state.square.done) {
-      holding.set(w.clientId, { openingId: o.workflowId, deadline: w.holdUntil, held: true });
+      holding.set(w.clientId, { openingId: o.workflowId, deadline: w.holdUntil, held: true, stopped });
     }
   }
   const denominator = counts.filled + counts.unfilled + counts.leftOpen;
 
-  response.json({
+  return {
     now: Date.now(),
+    /** Is the background service (a Temporal Worker on "juniper-salon") running? Plus simulated system alerts. */
+    system: { ...system, readError, lastReadAt: readError ? (lastKnownListings?.at ?? null) : Date.now() },
     openings,
     refill: {
       ...counts,
@@ -277,6 +472,7 @@ app.get("/api/dashboard", async (_request, response) => {
       "clients" in waitlist
         ? {
             source: waitlist.source,
+            staleSince: waitlist.staleSince,
             workflowId: WAITLIST_WORKFLOW_ID,
             temporalUrl: temporalLink(WAITLIST_WORKFLOW_ID),
             clients: waitlist.clients.map((c) => ({
@@ -289,7 +485,20 @@ app.get("/api/dashboard", async (_request, response) => {
             })),
           }
         : { error: waitlist.error },
-  });
+  };
+}
+
+app.get("/api/dashboard", async (_request, response) => {
+  // Always answers (200), even when Temporal can't be reached: `system` says what's wrong and the
+  // openings shown are the last ones read, marked stale.
+  if (!dashboardMemo || Date.now() - dashboardMemo.at > DASHBOARD_SHARE_MS) {
+    const promise = buildDashboard();
+    dashboardMemo = { at: Date.now(), promise };
+    promise.catch(() => {
+      if (dashboardMemo?.promise === promise) dashboardMemo = undefined;
+    });
+  }
+  response.json(await dashboardMemo.promise);
 });
 
 app.get("/api/waitlist", async (_request, response) => {
@@ -306,8 +515,11 @@ async function waitlistHandle() {
 
 /** Run a waitlist Update; validator refusals become 400 (bad input) or 409 (refused), never 500. */
 async function waitlistAction(response: Response, run: () => Promise<unknown>, status = 200) {
+  requireWorker();
+  invalidateDashboard();
   try {
-    response.status(status).json(await run());
+    response.status(status).json(await withUpdateDeadline(run));
+    invalidateDashboard();
   } catch (error) {
     const readable = readableUpdateError(error, "The waitlist isn't running right now — try again in a moment.");
     if (!readable) throw error;
@@ -369,6 +581,7 @@ app.post("/api/openings", async (request, response) => {
       : Number(body.stopOfferingMinutesBefore);
   const fastDemo = Boolean(body.fastDemo);
   const simulateTextFailure = Boolean(body.simulateTextFailure);
+  const simulateTextsKeepFailing = Boolean(body.simulateTextsKeepFailing);
 
   if (!SERVICES.includes(service)) throw new HttpError(400, `Pick a service (${SERVICES.join(", ")}).`);
   if (!STYLISTS.includes(stylist)) throw new HttpError(400, `Pick a stylist (${STYLISTS.join(", ")}).`);
@@ -409,6 +622,7 @@ app.post("/api/openings", async (request, response) => {
     stopOfferingMinutesBefore,
     fastDemo,
     simulateTextFailure,
+    ...(simulateTextsKeepFailing ? { simulateTextsKeepFailing } : {}),
   };
   const client = await getClient();
   await ensureWaitlist(client);
@@ -418,6 +632,7 @@ app.post("/api/openings", async (request, response) => {
     args: [input],
   });
   recentOpeningIds.add(openingId);
+  invalidateDashboard();
   response.status(201).json({ openingId, workflowId: openingId, temporalUrl: temporalLink(openingId), input });
 });
 
@@ -448,6 +663,17 @@ app.post(
     }),
   ),
 );
+
+// Staff saw an unexpected stop and dealt with it (e.g. contacted the clients themselves): it leaves "Needs you".
+// Kept in this API process's memory, so a restarted API lists it again.
+app.post("/api/openings/:id/acknowledge-stop", async (request, response) => {
+  const id = String(request.params.id);
+  if (!/^opening-[a-z0-9-]+$/i.test(id)) throw new HttpError(404, "Unknown opening.");
+  const handledAt = Date.now();
+  handledStops.set(id, handledAt);
+  invalidateDashboard();
+  response.json({ ok: true, handledAt, message: "Marked as handled. It moves to Finished." });
+});
 
 app.post("/api/openings/:id/keep-trying", staffAction(async (id) => (await openingHandle(id)).executeUpdate(keepTrying)));
 app.post("/api/openings/:id/leave-open", staffAction(async (id) => (await openingHandle(id)).executeUpdate(leaveOpen)));
@@ -490,10 +716,15 @@ app.post("/api/offers/:id/respond", async (request, response) => {
   const token = String(request.body?.token ?? "");
   const answer = request.body?.answer;
   if (answer !== "accept" && answer !== "decline") throw new HttpError(400, "Answer must be accept or decline.");
+  requireWorker("We couldn't record your reply just now. Please try again in a few minutes, or call the salon.");
   const handle = await openingHandle(id);
   let result: RespondResult;
   try {
-    result = await handle.executeUpdate(respond, { args: [{ clientId, token, answer }] });
+    result = await withUpdateDeadline(
+      () => handle.executeUpdate(respond, { args: [{ clientId, token, answer }] }),
+      "We couldn't confirm your reply just now. Please check this page again in a few minutes, or call the salon.",
+    );
+    invalidateDashboard();
   } catch (error) {
     const readable = readableUpdateError(error);
     if (!readable) throw error;
@@ -537,4 +768,12 @@ app.listen(port, () => {
   getClient()
     .then(ensureWaitlist)
     .catch((error) => console.warn("Waitlist workflow not started yet:", error instanceof Error ? error.message : error));
+  startHealthMonitor(getClient);
+  // Keep the last-read state of every opening fresh even when nobody has the page open, so that if the
+  // background service stops, the cards can still show what each opening was doing (marked as such).
+  const warm = () => {
+    if (knownHealth().workerOk && !dashboardMemo) void buildDashboard().catch(() => undefined);
+  };
+  setTimeout(warm, 3_000).unref();
+  setInterval(warm, 15_000).unref();
 });

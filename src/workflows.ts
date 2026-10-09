@@ -6,6 +6,7 @@ import {
   condition,
   continueAsNew,
   isCancellation,
+  patched,
   proxyActivities,
   setHandler,
   sleep,
@@ -287,6 +288,10 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
   setHandler(
     cancelOpening,
     (args: { reason?: string }) => {
+      // Offers whose text never went out (still "sending", e.g. the gateway keeps failing) aren't told
+      // anything: nobody received them. (Patched so openings cancelled by older builds still replay.)
+      const unsent = patched("cancel-skips-unsent-offers") ? s.offers.filter((o) => o.status === "sending") : [];
+      unsent.forEach((o) => (o.status = "not_sent"));
       const told = s.offers.filter((o) => isLive(o) || o.offerId === s.winner?.offerId);
       told.forEach((o) => (o.status = "told_cancelled"));
       const heldFor = s.winner?.name;
@@ -302,7 +307,15 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
       sendScope?.cancel(); // stop any text still being sent / retried
       log("cancelled", `Staff cancelled the opening${s.cancelReason ? ` (${s.cancelReason})` : ""}${heldFor ? ` — hold for ${heldFor} released` : ""}.`);
       if (told.length) log("told_cancelled", `Simulated text to ${names(told)}: no longer available.`);
-      return { ok: true, message: "Opening cancelled. Anyone holding an offer is told it's no longer available." };
+      if (unsent.length) log("not_sent", `The offer to ${names(unsent)} hadn't gone out, so nobody was told.`);
+      return {
+        ok: true,
+        message: told.length
+          ? "Opening cancelled. Anyone holding an offer is told it's no longer available."
+          : unsent.length
+            ? "Opening cancelled. The offer texts hadn't gone out, so nobody was told."
+            : "Opening cancelled.",
+      };
     },
     {
       validator: (_args: { reason?: string }) => {
@@ -592,6 +605,7 @@ export async function openingWorkflow(input: OpeningInput): Promise<OpeningState
           opening: s.opening,
           offers: offers.map(({ offerId, clientId, name, mobile, token }) => ({ offerId, clientId, name, mobile, token })),
           simulateFailure: s.opening.simulateTextFailure,
+          ...(s.opening.simulateTextsKeepFailing ? { keepFailing: true } : {}),
           replyWindowSeconds: windowMs / 1000,
           ...(Number.isFinite(sendBy) ? { notAfter: sendBy } : {}),
         });
