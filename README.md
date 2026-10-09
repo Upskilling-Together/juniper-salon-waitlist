@@ -1,4 +1,4 @@
-# Juniper Salon — Refill Openings
+# Juniper Salon — Open Chairs
 
 Lena runs Juniper Salon. When a client cancels at the last minute, she or Carla open the Google Sheet waitlist and text the 3 or 4 people who seem to fit. They text several people at once because it fills the chair faster. That speed has a cost:
 - Sometimes two people say yes, and someone ends up disappointed.
@@ -11,12 +11,13 @@ This prototype keeps the speed of texting several people at once, but **only one
 
 ## Run it
 
-You need **Node.js 20+** and **Docker Desktop**.
+You need **Node.js 20+** and **Docker Desktop** (running). From the project folder, run one command:
 
 ```bash
-npm install
-npm run dev
+npm install && npm run dev
 ```
+
+It installs dependencies, starts Temporal in Docker, and launches the Worker and the web app. (In Windows PowerShell 5, run `npm install` and then `npm run dev`.)
 
 - Staff dashboard: <http://localhost:3000>
 - Temporal Web UI: <http://localhost:8233> (each opening also has a **View workflow in Temporal** link)
