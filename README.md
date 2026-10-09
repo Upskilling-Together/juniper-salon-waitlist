@@ -28,7 +28,7 @@ Press **Ctrl+C** to stop the app, and run `npm run stop` to stop Temporal. Tempo
 
 ## Presentation and evidence
 
-- Slides for Lena (5 pages, PDF): [`presentation/Open-Chairs-Juniper-Salon.pdf`](presentation/Open-Chairs-Juniper-Salon.pdf)
+- Slides for Lena in [`presentation/`](presentation/): the 5-page PDF [`Open-Chairs-Juniper-Salon.pdf`](presentation/Open-Chairs-Juniper-Salon.pdf), each slide as an image in [`slides/`](presentation/slides/), and a speaker script in [`speaker-notes.md`](presentation/speaker-notes.md)
 - Temporal Web UI screenshot of a completed opening, plus app screenshots: [`evidence/`](evidence/)
 
 ## Try it
